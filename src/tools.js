@@ -4,7 +4,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { encodeGrid } from "./rle.js";
-import { applyOps, targetGrid, mirrorHorizontal, addAnimation, copyFrame, normalizeHex, GRID_SIZES, DEFAULT_PALETTE } from "./model.js";
+import { applyOps, targetGrid, mirrorHorizontal, addAnimation, copyFrame, normalizeHex, resizeSprite, contentBounds, GRID_SIZES, DEFAULT_PALETTE } from "./model.js";
 import { renderPng, renderOnionSkin } from "./render.js";
 import { exportSprite } from "./export.js";
 import fs from "node:fs";
@@ -27,6 +27,9 @@ Contract (read before drawing):
   mirrors the left half for symmetric characters.
 - Before declaring a sprite done: get_render with scale 2 and judge whether it
   still reads at game size. If it only looks good big, it isn't done.
+- Leave headroom: characters at ~75-85% of grid height, 2-4px air per side.
+  Animations need it. If an existing sprite is too tight, resize_sprite grows
+  the grid without redrawing (content stays bottom-centered).
 - Refinement = smallest possible patch (pixels/rect ops). Never redraw the whole
   grid unless the user asks for a redo.
 - Animation: add_animation -> copy_frame from a neighbor -> patch the pose ->
@@ -90,6 +93,25 @@ function text(s) {
   return { content: [{ type: "text", text: s }] };
 }
 
+/**
+ * Measure content headroom and warn when the sprite crowds the grid edge.
+ * This is how a fresh session learns the sprite has no room to animate —
+ * surfaced in the tool result, at the moment it matters.
+ */
+function headroomNote(s) {
+  const b = contentBounds(s.grid);
+  if (!b) return "";
+  const room = {
+    top: b.minY,
+    right: s.width - 1 - b.maxX,
+    bottom: s.height - 1 - b.maxY,
+    left: b.minX,
+  };
+  const tight = Object.entries(room).filter(([, v]) => v < 2).map(([k]) => k);
+  if (tight.length === 0) return "";
+  return ` ⚠ Headroom top ${room.top}px / right ${room.right}px / bottom ${room.bottom}px / left ${room.left}px — content is at the grid edge (${tight.join(", ")}). Animation poses (squash, lunges, weapon arcs) will clip. resize_sprite grows the grid without redrawing; content stays bottom-centered.`;
+}
+
 function err(e) {
   return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
 }
@@ -126,7 +148,7 @@ export function createMcpServer(storage) {
     safe(({ name, width, height }) => {
       const s = storage.create(name, width, height);
       const warn = width > 32 || height > 32 ? " WARNING: grids above 32 degrade LLM spatial coherence — expect to need more fix passes." : "";
-      return text(`Created "${name}" (${width}x${height}), palette indices 0..${s.palette.length - 1} (0 = transparent).${warn} Next: draw the silhouette with a "rows" op, then get_render to look at it.`);
+      return text(`Created "${name}" (${width}x${height}), palette indices 0..${s.palette.length - 1} (0 = transparent).${warn} Draw the character at ~75-85% of grid height, bottom-centered, with 2-4px of air on every side — animations need that headroom. Next: draw the silhouette with a "rows" op, then get_render to look at it.`);
     })
   );
 
@@ -222,7 +244,7 @@ export function createMcpServer(storage) {
       if (mirror) mirrorHorizontal(s, grid);
       storage.save(s);
       const target = frame ? `frame ${frame.index} of "${frame.anim}"` : "base sprite";
-      return text(`Applied ${ops.length} op(s) to ${target}${mirror ? " (mirrored)" : ""}. Now call get_render and critique the result.`);
+      return text(`Applied ${ops.length} op(s) to ${target}${mirror ? " (mirrored)" : ""}. Now call get_render and critique the result.${frame ? "" : headroomNote(s)}`);
     })
   );
 
@@ -294,7 +316,7 @@ export function createMcpServer(storage) {
       storage.beginEdit(sprite);
       addAnimation(s, name, frames, fps);
       storage.save(s);
-      return text(`Animation "${name}" created: ${frames} frames @ ${fps}fps. Frame 0 = copy of base sprite. Next: copy_frame from frame 0, then patch the pose per frame.`);
+      return text(`Animation "${name}" created: ${frames} frames @ ${fps}fps. Frame 0 = copy of base sprite. All frames share the base sprite's ${s.width}x${s.height} grid.${headroomNote(s)} Next: copy_frame from frame 0, then patch the pose per frame.`);
     })
   );
 
@@ -353,6 +375,30 @@ export function createMcpServer(storage) {
       const s = storage.get(sprite);
       const { pngPath, jsonPath, frames } = exportSprite(s, storage, { layout, anim });
       return text(`Exported ${frames.length} frame(s).\nPNG:  ${pngPath}\nJSON: ${jsonPath}`);
+    })
+  );
+
+  server.registerTool(
+    "resize_sprite",
+    {
+      description:
+        "Resize a sprite and all its animation frames to a new grid size without redrawing. " +
+        "Content stays horizontally centered and bottom-aligned, so growing the grid adds headroom " +
+        "for animation poses (jump, attack lunges). Use when frames clip at the grid edge. " +
+        `Sizes: ${GRID_SIZES.join("/")}.`,
+      inputSchema: {
+        sprite: z.string(),
+        width: z.number().int(),
+        height: z.number().int(),
+      },
+    },
+    safe(({ sprite, width, height }) => {
+      const s = storage.get(sprite);
+      storage.beginEdit(sprite);
+      const from = `${s.width}x${s.height}`;
+      resizeSprite(s, width, height);
+      storage.save(s);
+      return text(`Resized "${sprite}" from ${from} to ${width}x${height} (content bottom-centered, all frames remapped).`);
     })
   );
 

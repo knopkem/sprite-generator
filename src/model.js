@@ -229,6 +229,22 @@ export function mirrorHorizontal(sprite, grid) {
   }
 }
 
+/** Bounding box of non-transparent content, or null if the grid is empty. */
+export function contentBounds(grid) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let y = 0; y < grid.length; y++) {
+    for (let x = 0; x < grid[y].length; x++) {
+      if (grid[y][x] !== 0) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  return maxX < 0 ? null : { minX, minY, maxX, maxY };
+}
+
 export function addAnimation(sprite, name, frameCount, fps) {
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
     throw new Error(`invalid animation name "${name}"`);
@@ -298,4 +314,37 @@ export function setFps(sprite, animName, fps) {
   const anim = getAnim(sprite, animName);
   if (!Number.isInteger(fps) || fps < 1 || fps > 60) throw new Error(`fps must be an integer 1..60 (got ${fps})`);
   anim.fps = fps;
+}
+
+/**
+ * Resize a sprite (and all animation frames) to a new grid size.
+ * Content stays horizontally centered and bottom-aligned (feet-on-ground
+ * convention), so growing the grid adds headroom for animation poses.
+ */
+export function resizeSprite(sprite, width, height) {
+  if (!GRID_SIZES.includes(width) || !GRID_SIZES.includes(height)) {
+    throw new Error(`grid size must be one of ${GRID_SIZES.join("/")} (got ${width}x${height})`);
+  }
+  if (width === sprite.width && height === sprite.height) return;
+
+  const remap = (grid) => {
+    const out = blankGrid(width, height);
+    const dx = Math.round((width - sprite.width) / 2);
+    const dy = height - sprite.height; // bottom-align
+    for (let y = 0; y < sprite.height; y++) {
+      for (let x = 0; x < sprite.width; x++) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height) out[ny][nx] = grid[y][x];
+      }
+    }
+    return out;
+  };
+
+  sprite.grid = remap(sprite.grid);
+  for (const anim of Object.values(sprite.animations)) {
+    anim.frames = anim.frames.map(remap);
+  }
+  sprite.width = width;
+  sprite.height = height;
 }

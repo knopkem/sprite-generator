@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createSprite, applyOps, addAnimation, insertFrame, deleteFrame, moveFrame, setFps } from "../src/model.js";
+import { createSprite, applyOps, addAnimation, insertFrame, deleteFrame, moveFrame, setFps, resizeSprite, contentBounds } from "../src/model.js";
 import { Storage } from "../src/storage.js";
 
 function tmpStorage() {
@@ -25,6 +25,38 @@ test("fill flood-fills a connected region only", () => {
   // fill to transparent works
   applyOps(s, s.grid, [{ type: "fill", x: 10, y: 10, color: 0 }]);
   assert.equal(s.grid[11][11], 0);
+});
+
+test("resizeSprite grows bottom-centered and remaps all frames", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "pixels", pixels: [{ x: 0, y: 15, color: 4 }, { x: 15, y: 0, color: 6 }] }]);
+  addAnimation(s, "idle", 2, 5);
+  resizeSprite(s, 32, 32);
+
+  assert.equal(s.width, 32);
+  assert.equal(s.height, 32);
+  // x=0 -> 8, x=15 -> 23 (centered); y=15 -> 31, y=0 -> 16 (bottom-aligned)
+  assert.equal(s.grid[31][8], 4);
+  assert.equal(s.grid[16][23], 6);
+  assert.equal(s.animations.idle.frames.length, 2);
+  assert.equal(s.animations.idle.frames[0].length, 32);
+  // animation frame 0 was a copy of the base, so it has the same pixel
+  assert.equal(s.animations.idle.frames[0][31][8], 4);
+
+  // shrink back: crops the added margin
+  resizeSprite(s, 16, 16);
+  assert.equal(s.grid[15][0], 4);
+  assert.throws(() => resizeSprite(s, 20, 20), /grid size/);
+});
+
+test("contentBounds measures headroom and handles empty grids", () => {
+  const s = createSprite("t", 16, 16);
+  assert.equal(contentBounds(s.grid), null);
+  applyOps(s, s.grid, [{ type: "rect", x: 3, y: 4, w: 5, h: 6, color: 2 }]);
+  assert.deepEqual(contentBounds(s.grid), { minX: 3, minY: 4, maxX: 7, maxY: 9 });
+  // touching an edge shows up as 0 headroom for consumers of this helper
+  applyOps(s, s.grid, [{ type: "pixels", pixels: [{ x: 15, y: 0, color: 1 }] }]);
+  assert.deepEqual(contentBounds(s.grid), { minX: 3, minY: 0, maxX: 15, maxY: 9 });
 });
 
 test("frame ops: insert/duplicate/delete/move with bounds", () => {

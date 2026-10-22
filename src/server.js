@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer, drawOpsSchema } from "./tools.js";
 import { Storage } from "./storage.js";
-import { targetGrid, applyOps, mirrorHorizontal, insertFrame, deleteFrame, moveFrame, setFps, normalizeHex } from "./model.js";
+import { targetGrid, applyOps, mirrorHorizontal, insertFrame, deleteFrame, moveFrame, setFps, normalizeHex, resizeSprite } from "./model.js";
 import { renderPng } from "./render.js";
 import { exportSprite } from "./export.js";
 
@@ -114,6 +114,20 @@ async function handleApi(req, res, url) {
       if (!Number.isInteger(idx) || idx < 1 || idx >= s.palette.length) throw new Error("palette index out of range (index 0 is locked to transparent)");
       storage.beginEdit(s.name);
       s.palette[idx] = normalizeHex(String(body.color));
+      storage.save(s);
+      return json(res, 200, { ok: true, version: s.version });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
+  m = /^\/api\/sprite\/([\w-]+)\/resize$/.exec(p);
+  if (m && req.method === "POST") {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const s = storage.get(m[1]);
+      storage.beginEdit(s.name);
+      resizeSprite(s, Number(body.width), Number(body.height));
       storage.save(s);
       return json(res, 200, { ok: true, version: s.version });
     } catch (e) {

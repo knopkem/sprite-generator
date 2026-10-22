@@ -40,3 +40,6 @@ every frame must remain recognizably the same character.
 - Small motions beat big ones. A 1-2px bob reads better than limbs flying.
 - The base sprite's silhouette should be ~90% preserved per frame — poses
   change limbs and details, not the body mass.
+- **If a pose would clip at the grid edge, do not squash it to fit.** Call
+  `resize_sprite` to grow the grid (content stays bottom-centered, all frames
+  remapped), then animate into the new headroom.

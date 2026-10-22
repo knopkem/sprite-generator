@@ -95,5 +95,6 @@ export const api = {
   setFps(fps) {
     return guard(post(`/api/sprite/${state.current.name}/anim/${state.anim}/fps`, { fps }));
   },
+  resize: (width, height) => guard(post(`/api/sprite/${state.current.name}/resize`, { width, height })),
   exportSprite: () => guard(post(`/api/export/${state.current.name}`)),
 };

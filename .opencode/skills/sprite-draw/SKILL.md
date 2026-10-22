@@ -44,7 +44,12 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
   patches. Never emit hundreds of single-pixel ops.
 - Palette index 0 is transparent. Leave breathing room — don't fill the grid
   edge to edge unless the sprite is a tile.
-- Keep sprites centered, feet on the bottom row area.
+- Keep sprites centered, feet on the bottom row area — and draw the character
+  at ~75-85% of the grid height with 2-4px of air on every side. Animations
+  (jump squash, attack lunges, weapon arcs) need that headroom; a base sprite
+  drawn edge-to-edge forces clipped or cramped poses later. If an existing
+  sprite is already too tight, `resize_sprite` grows the grid (content stays
+  bottom-centered) instead of redrawing.
 - RLE reminder: `"count:index"` runs, `;` between rows. Row must sum to
   exactly the grid width.
 - Prefer deterministic ops over hand-drawn polish: `outline` for silhouettes,

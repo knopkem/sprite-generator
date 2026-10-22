@@ -88,10 +88,25 @@ function renderStatus() {
   $("status").textContent = parts.join(" · ") || "no sprites — ask your agent to draw one";
 }
 
+function renderResizeSelect() {
+  const sel = $("resize-select");
+  const s = state.current;
+  const sizes = [16, 24, 32, 48, 64];
+  sel.innerHTML = "";
+  for (const n of sizes) {
+    const o = document.createElement("option");
+    o.value = n;
+    o.textContent = `${n}×${n}`;
+    sel.appendChild(o);
+  }
+  if (s) sel.value = s.width;
+}
+
 on("render", () => {
   renderSidebar();
   renderToolbar();
   renderAnimSelect();
+  renderResizeSelect();
   renderPalette();
   renderFilmstrip($("filmstrip"));
   renderStatus();
@@ -137,6 +152,11 @@ $("anim-select").onchange = (e) => {
   state.frame = 0;
   stopPlay();
   emit("render");
+};
+
+$("resize-select").onchange = async (e) => {
+  const n = Number(e.target.value);
+  if (state.current && n !== state.current.width) await api.resize(n, n);
 };
 
 $("export-btn").onclick = async () => {
