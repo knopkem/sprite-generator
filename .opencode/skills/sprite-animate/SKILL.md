@@ -19,6 +19,8 @@ every frame must remain recognizably the same character.
 3. **Keyframe-first**: `copy_frame` frame 0 → all other frames. Then patch
    ONE frame at a time with `draw` + `frame: {anim, index}`. Start with the
    most extreme poses (contact, passing, apex), then the in-betweens.
+   Use `shift` ops for whole-body bob (e.g. idle: `shift dy:-1` on alternating
+   frames) — it's exact, where hand-redrawing drifts.
 
 4. **Check motion with onion skin**: `get_onion_skin` per frame. Red = previous
    frame, blue = next. Look for: jitter (body parts teleporting), volume loss

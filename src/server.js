@@ -7,9 +7,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createMcpServer } from "./tools.js";
+import { createMcpServer, drawOpsSchema } from "./tools.js";
 import { Storage } from "./storage.js";
-import { targetGrid } from "./model.js";
+import { targetGrid, applyOps, mirrorHorizontal, insertFrame, deleteFrame, moveFrame, setFps, normalizeHex } from "./model.js";
 import { renderPng } from "./render.js";
 import { exportSprite } from "./export.js";
 
@@ -75,15 +75,89 @@ async function handleApi(req, res, url) {
     }
   }
 
-  m = /^\/api\/sprite\/([\w-]+)\/pixel$/.exec(p);
+  m = /^\/api\/sprite\/([\w-]+)\/draw$/.exec(p);
+  if (m && req.method === "POST") {
+    // Same op format + validation path as the MCP draw tool.
+    try {
+      const body = JSON.parse(await readBody(req));
+      const parsed = drawOpsSchema.safeParse(body.ops);
+      if (!parsed.success) throw new Error(parsed.error.issues.map((i) => i.message).join("; "));
+      const s = storage.get(m[1]);
+      storage.beginEdit(s.name);
+      const frame = body.anim != null ? { anim: body.anim, index: Number(body.frame ?? 0) } : undefined;
+      const grid = targetGrid(s, frame);
+      applyOps(s, grid, parsed.data);
+      if (body.mirror) mirrorHorizontal(s, grid);
+      storage.save(s);
+      return json(res, 200, { ok: true, version: s.version });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
+  m = /^\/api\/sprite\/([\w-]+)\/(undo|redo)$/.exec(p);
+  if (m && req.method === "POST") {
+    try {
+      const s = m[2] === "undo" ? storage.undo(m[1]) : storage.redo(m[1]);
+      return json(res, 200, { ok: true, version: s.version });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
+  m = /^\/api\/sprite\/([\w-]+)\/palette$/.exec(p);
   if (m && req.method === "POST") {
     try {
       const body = JSON.parse(await readBody(req));
       const s = storage.get(m[1]);
-      const grid = body.anim != null ? targetGrid(s, { anim: body.anim, index: Number(body.frame ?? 0) }) : s.grid;
-      if (body.x < 0 || body.x >= s.width || body.y < 0 || body.y >= s.height) throw new Error("out of bounds");
-      if (!Number.isInteger(body.color) || body.color < 0 || body.color >= s.palette.length) throw new Error("bad color index");
-      grid[body.y][body.x] = body.color;
+      const idx = Number(body.index);
+      if (!Number.isInteger(idx) || idx < 1 || idx >= s.palette.length) throw new Error("palette index out of range (index 0 is locked to transparent)");
+      storage.beginEdit(s.name);
+      s.palette[idx] = normalizeHex(String(body.color));
+      storage.save(s);
+      return json(res, 200, { ok: true, version: s.version });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
+  m = /^\/api\/sprite\/([\w-]+)\/anim\/([\w-]+)\/frames$/.exec(p);
+  if (m && req.method === "POST") {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const s = storage.get(m[1]);
+      storage.beginEdit(s.name);
+      const idx = Number(body.index);
+      switch (body.op) {
+        case "add":
+          insertFrame(s, m[2], idx, Boolean(body.copy));
+          break;
+        case "duplicate":
+          insertFrame(s, m[2], idx, true);
+          break;
+        case "delete":
+          deleteFrame(s, m[2], idx);
+          break;
+        case "move":
+          moveFrame(s, m[2], Number(body.from), Number(body.to));
+          break;
+        default:
+          throw new Error(`unknown frame op "${body.op}" (add|duplicate|delete|move)`);
+      }
+      storage.save(s);
+      return json(res, 200, { ok: true, version: s.version });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
+  m = /^\/api\/sprite\/([\w-]+)\/anim\/([\w-]+)\/fps$/.exec(p);
+  if (m && req.method === "POST") {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const s = storage.get(m[1]);
+      storage.beginEdit(s.name);
+      setFps(s, m[2], Number(body.fps));
       storage.save(s);
       return json(res, 200, { ok: true, version: s.version });
     } catch (e) {

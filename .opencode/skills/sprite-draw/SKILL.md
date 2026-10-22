@@ -13,25 +13,30 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
    (e.g. "wizard: pointy hat, long robe, staff"). If the user gave no size,
    use 32x32. If they ask for >32, warn once about quality, then proceed.
 
-2. **Palette.** If the sprite fits the default 16-color palette, keep it.
-   Only call `set_palette` for a specific art direction. Read
-   `references/pixel-art-basics.md` if unsure about palette discipline.
+2. **Palette.** The default palette is ramp-based — each hue family has
+   light/mid/dark as adjacent indices (check `get_palette`). Shade with the
+   darker neighbor, highlight with the lighter. Only call `set_palette` for a
+   specific art direction. Read `references/pixel-art-basics.md` if unsure.
 
-3. **Silhouette pass.** Draw ONLY the overall shape in 1-2 dark colors using
-   one `draw` call with `rows` ops (RLE). For symmetric characters, draw the
-   left half and pass `mirror: true`. A good silhouette reads at thumbnail
-   size — that is the whole game.
+3. **Silhouette pass.** Draw ONLY the overall shape in 1-2 mid-tone colors
+   using one `draw` call with `rows` ops (RLE). For symmetric characters, draw
+   the left half and pass `mirror: true`. A good silhouette reads at thumbnail
+   size — that is the whole game. **Do not hand-draw outlines** — finish the
+   pass with an `outline` op, which wraps the shape automatically.
 
 4. **Look at it.** Call `get_render`. Critique honestly against the brief:
    proportions? readable? lopsided? Fix with small patches before proceeding.
    Never claim it looks good without rendering.
 
-5. **Detail passes.** Add shading, face, gear — one `draw` call per pass,
-   `get_render` after each. 2-4 detail passes is normal.
+5. **Detail passes.** Add shading (ramp neighbors), face, gear — one `draw`
+   call per pass, `get_render` after each. 2-4 detail passes is normal.
+   See `references/worked-example.md` for a complete real session — match
+   that economy of tool calls.
 
-6. **Done when:** the user approves, or the render clearly matches the brief
-   at 100% zoom. Suggest next steps (animation via the sprite-animate skill,
-   export via sprite-export).
+6. **Done when:** you have rendered at `scale: 2` and the sprite still reads
+   clearly at game size, AND the user approves. If it only looks good at
+   512px, it isn't done. Then suggest next steps (animation via the
+   sprite-animate skill, export via sprite-export).
 
 ## Rules
 
@@ -42,3 +47,5 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
 - Keep sprites centered, feet on the bottom row area.
 - RLE reminder: `"count:index"` runs, `;` between rows. Row must sum to
   exactly the grid width.
+- Prefer deterministic ops over hand-drawn polish: `outline` for silhouettes,
+  `shift` to move a frame, `mirror: true` for symmetry.

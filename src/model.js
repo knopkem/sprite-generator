@@ -14,23 +14,33 @@ import { decodeRow } from "./rle.js";
 export const GRID_SIZES = [16, 24, 32, 48, 64];
 export const MAX_PIXELS_PER_OP = 512;
 
+// Ramp-based palette: outline + white + 3-shade ramps per hue family.
+// Ramps are adjacent index triples (light, mid, dark) so shading = index ± 1.
 export const DEFAULT_PALETTE = [
   "#00000000", // 0 transparent (required)
-  "#1a1c2c",
-  "#5d275d",
-  "#b13e53",
-  "#ef7d57",
-  "#ffcd75",
-  "#a7f070",
-  "#38b764",
-  "#257179",
-  "#29366f",
-  "#3b5dc9",
-  "#41a6f6",
-  "#73eff7",
-  "#f4f4f4",
-  "#94b0c2",
-  "#566c86",
+  "#1a1c2c", // 1 outline / near-black
+  "#f4f4f4", // 2 white
+  "#94b0c2", // 3 light gray
+  "#566c86", // 4 dark gray
+  "#ffcd75", // 5 skin light
+  "#ef7d57", // 6 skin mid
+  "#a15c48", // 7 skin dark
+  "#d95763", // 8 red light
+  "#b13e53", // 9 red mid
+  "#6e2f45", // 10 red dark
+  "#e8a13c", // 11 gold light
+  "#b57e2e", // 12 gold dark
+  "#a7f070", // 13 green light
+  "#38b764", // 14 green mid
+  "#257179", // 15 green dark / teal
+  "#73eff7", // 16 cyan light
+  "#41a6f6", // 17 azure
+  "#3b5dc9", // 18 blue mid
+  "#29366f", // 19 blue dark
+  "#a464c2", // 20 purple light
+  "#5d275d", // 21 purple dark
+  "#8a5a3c", // 22 brown
+  "#5c3a2e", // 23 brown dark
 ];
 
 export function normalizeHex(hex) {
@@ -137,6 +147,65 @@ export function applyOps(sprite, grid, ops) {
         for (let y = 0; y < sprite.height; y++) grid[y].fill(c);
         break;
       }
+      case "outline": {
+        // Wrap all opaque pixels in an outline color. Computed from a snapshot
+        // so the outline itself doesn't cascade.
+        const c = op.color ?? 1;
+        checkColor(sprite, c);
+        const snapshot = grid.map((r) => [...r]);
+        for (let y = 0; y < sprite.height; y++) {
+          for (let x = 0; x < sprite.width; x++) {
+            if (snapshot[y][x] !== 0) continue;
+            const touchesOpaque =
+              (y > 0 && snapshot[y - 1][x] !== 0) ||
+              (y < sprite.height - 1 && snapshot[y + 1][x] !== 0) ||
+              (x > 0 && snapshot[y][x - 1] !== 0) ||
+              (x < sprite.width - 1 && snapshot[y][x + 1] !== 0) ||
+              (op.diagonals &&
+                ((y > 0 && x > 0 && snapshot[y - 1][x - 1] !== 0) ||
+                  (y > 0 && x < sprite.width - 1 && snapshot[y - 1][x + 1] !== 0) ||
+                  (y < sprite.height - 1 && x > 0 && snapshot[y + 1][x - 1] !== 0) ||
+                  (y < sprite.height - 1 && x < sprite.width - 1 && snapshot[y + 1][x + 1] !== 0)));
+            if (touchesOpaque) grid[y][x] = c;
+          }
+        }
+        break;
+      }
+      case "fill": {
+        // Flood fill (4-connectivity) from (x, y), replacing the connected
+        // region of the clicked color with `color`.
+        checkBounds(sprite, op.x, op.y);
+        checkColor(sprite, op.color);
+        const from = grid[op.y][op.x];
+        if (from === op.color) break;
+        const stack = [[op.x, op.y]];
+        while (stack.length) {
+          const [x, y] = stack.pop();
+          if (x < 0 || x >= sprite.width || y < 0 || y >= sprite.height) continue;
+          if (grid[y][x] !== from) continue;
+          grid[y][x] = op.color;
+          stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+        }
+        break;
+      }
+      case "shift": {
+        // Translate the whole grid by (dx, dy). Pixels shifted off-grid are
+        // dropped; vacated cells become transparent. Great for animation bob.
+        const dx = op.dx ?? 0;
+        const dy = op.dy ?? 0;
+        const snapshot = grid.map((r) => [...r]);
+        for (let y = 0; y < sprite.height; y++) grid[y].fill(0);
+        for (let y = 0; y < sprite.height; y++) {
+          for (let x = 0; x < sprite.width; x++) {
+            const v = snapshot[y][x];
+            if (v === 0) continue;
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && nx < sprite.width && ny >= 0 && ny < sprite.height) grid[ny][nx] = v;
+          }
+        }
+        break;
+      }
       default:
         throw new Error(`${where}: unknown op type "${op.type}"`);
     }
@@ -187,4 +256,46 @@ export function copyFrame(sprite, animName, from, to) {
     }
   }
   anim.frames[to] = anim.frames[from].map((r) => [...r]);
+}
+
+function getAnim(sprite, animName) {
+  const anim = sprite.animations[animName];
+  if (!anim) throw new Error(`no animation "${animName}" on sprite "${sprite.name}"`);
+  return anim;
+}
+
+function checkFrameIndex(anim, index) {
+  if (!Number.isInteger(index) || index < 0 || index >= anim.frames.length) {
+    throw new Error(`frame index ${index} out of range (${anim.frames.length} frames)`);
+  }
+}
+
+/** Insert a frame after `index`; copies that frame when copy=true, else blank. */
+export function insertFrame(sprite, animName, index, copy) {
+  const anim = getAnim(sprite, animName);
+  checkFrameIndex(anim, index);
+  if (anim.frames.length >= 16) throw new Error("animation already has the maximum of 16 frames");
+  const frame = copy ? anim.frames[index].map((r) => [...r]) : blankGrid(sprite.width, sprite.height);
+  anim.frames.splice(index + 1, 0, frame);
+}
+
+export function deleteFrame(sprite, animName, index) {
+  const anim = getAnim(sprite, animName);
+  checkFrameIndex(anim, index);
+  if (anim.frames.length <= 1) throw new Error("cannot delete the last frame");
+  anim.frames.splice(index, 1);
+}
+
+export function moveFrame(sprite, animName, from, to) {
+  const anim = getAnim(sprite, animName);
+  checkFrameIndex(anim, from);
+  checkFrameIndex(anim, to);
+  const [frame] = anim.frames.splice(from, 1);
+  anim.frames.splice(to, 0, frame);
+}
+
+export function setFps(sprite, animName, fps) {
+  const anim = getAnim(sprite, animName);
+  if (!Number.isInteger(fps) || fps < 1 || fps > 60) throw new Error(`fps must be an integer 1..60 (got ${fps})`);
+  anim.fps = fps;
 }

@@ -20,7 +20,13 @@ Contract (read before drawing):
 - Workflow: set_palette (optional) -> draw silhouette -> get_render -> critique
   the render honestly -> fix with small draw patches -> repeat until good.
 - ALWAYS get_render after each drawing pass. Never claim success without looking.
-- For symmetric characters: draw the left half, pass mirror: true.
+- The default palette is ramp-based: each hue family has light/mid/dark as
+  adjacent indices. Shade with the darker ramp neighbor, highlight with the lighter.
+- Deterministic ops beat hand-drawing: "outline" wraps the silhouette in an
+  outline color; "shift" moves a whole frame (animation bob); mirror: true
+  mirrors the left half for symmetric characters.
+- Before declaring a sprite done: get_render with scale 2 and judge whether it
+  still reads at game size. If it only looks good big, it isn't done.
 - Refinement = smallest possible patch (pixels/rect ops). Never redraw the whole
   grid unless the user asks for a redo.
 - Animation: add_animation -> copy_frame from a neighbor -> patch the pose ->
@@ -59,7 +65,26 @@ const drawOp = z.discriminatedUnion("type", [
     type: z.literal("clear"),
     color: z.number().int().min(0).optional(),
   }),
+  z.object({
+    type: z.literal("outline"),
+    color: z.number().int().min(0).optional().describe("outline color index (default 1)"),
+    diagonals: z.boolean().optional().describe("also outline diagonal neighbors (thicker)"),
+  }),
+  z.object({
+    type: z.literal("fill"),
+    x: z.number().int(),
+    y: z.number().int(),
+    color: z.number().int().min(0),
+  }),
+  z.object({
+    type: z.literal("shift"),
+    dx: z.number().int().optional(),
+    dy: z.number().int().optional(),
+  }),
 ]);
+
+/** Reused by the REST API so human and agent edits share one validation path. */
+export const drawOpsSchema = z.array(drawOp).min(1).max(50);
 
 function text(s) {
   return { content: [{ type: "text", text: s }] };
@@ -148,6 +173,7 @@ export function createMcpServer(storage) {
     },
     safe(({ sprite, colors }) => {
       const s = storage.get(sprite);
+      storage.beginEdit(sprite);
       s.palette = ["#00000000", ...colors.map(normalizeHex)];
       // clamp existing grid indices into the new palette
       const max = s.palette.length - 1;
@@ -175,7 +201,11 @@ export function createMcpServer(storage) {
         "Apply bulk draw ops to the base sprite or one animation frame. Ops run in order. " +
         'Prefer "rows" ops with RLE strings for shapes — one op can fill the whole grid. ' +
         'Use "pixels" (max 512) and "rect" for small fixes, "clear" to wipe. ' +
+        '"outline" wraps the silhouette in an outline color automatically (draw flat shapes first, outline after). ' +
+        '"fill" flood-fills a region from a point. ' +
+        '"shift" translates the whole grid by dx/dy (animation bob/squash). ' +
         "mirror: true mirrors the left half onto the right AFTER ops run (for symmetric sprites). " +
+        "Palette ramps: shading = pick the neighbor index within a ramp family (see get_palette). " +
         "Always get_render afterwards and look at the result.",
       inputSchema: {
         sprite: z.string(),
@@ -186,6 +216,7 @@ export function createMcpServer(storage) {
     },
     safe(({ sprite, ops, frame, mirror }) => {
       const s = storage.get(sprite);
+      storage.beginEdit(sprite);
       const grid = targetGrid(s, frame);
       applyOps(s, grid, ops);
       if (mirror) mirrorHorizontal(s, grid);
@@ -260,6 +291,7 @@ export function createMcpServer(storage) {
     },
     safe(({ sprite, name, frames, fps }) => {
       const s = storage.get(sprite);
+      storage.beginEdit(sprite);
       addAnimation(s, name, frames, fps);
       storage.save(s);
       return text(`Animation "${name}" created: ${frames} frames @ ${fps}fps. Frame 0 = copy of base sprite. Next: copy_frame from frame 0, then patch the pose per frame.`);
@@ -279,6 +311,7 @@ export function createMcpServer(storage) {
     },
     safe(({ sprite, anim, from, to }) => {
       const s = storage.get(sprite);
+      storage.beginEdit(sprite);
       copyFrame(s, anim, from, to);
       storage.save(s);
       return text(`Copied frame ${from} -> ${to} in "${anim}". Now patch the pose with draw (frame: {anim, index: ${to}}).`);

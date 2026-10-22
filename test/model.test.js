@@ -71,6 +71,37 @@ test("mirrorHorizontal mirrors left to right", () => {
   assert.equal(s.grid[5][13], 3);
 });
 
+test("outline wraps opaque pixels without cascading", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [
+    { type: "rect", x: 4, y: 4, w: 3, h: 3, color: 14 },
+    { type: "outline" },
+  ]);
+  // orthogonal neighbors outlined with default color 1
+  assert.equal(s.grid[3][5], 1); // above
+  assert.equal(s.grid[7][5], 1); // below
+  assert.equal(s.grid[5][3], 1); // left
+  assert.equal(s.grid[5][7], 1); // right
+  // diagonal untouched without diagonals flag
+  assert.equal(s.grid[3][3], 0);
+  // interior preserved
+  assert.equal(s.grid[5][5], 14);
+  // outline does not cascade beyond 1px
+  assert.equal(s.grid[2][5], 0);
+});
+
+test("shift translates grid and drops off-grid pixels", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [
+    { type: "pixels", pixels: [{ x: 2, y: 2, color: 5 }, { x: 15, y: 0, color: 6 }] },
+    { type: "shift", dx: 1, dy: 2 },
+  ]);
+  assert.equal(s.grid[4][3], 5);
+  assert.equal(s.grid[2][2], 0);
+  assert.equal(s.grid[2][15], 0); // x=15 shifted off-grid, dropped
+  assert.equal(s.grid.flat().filter((v) => v === 6).length, 0);
+});
+
 test("animations: add, target frame, copy", () => {
   const s = createSprite("t", 16, 16);
   applyOps(s, s.grid, [{ type: "pixels", pixels: [{ x: 1, y: 1, color: 4 }] }]);

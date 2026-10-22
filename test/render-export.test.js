@@ -22,12 +22,13 @@ test("parseColor handles rgb/rgba/transparent", () => {
 
 test("renderPng produces a valid PNG of expected size", () => {
   const s = createSprite("t", 16, 16);
-  applyOps(s, s.grid, [{ type: "rect", x: 4, y: 4, w: 4, h: 4, color: 3 }]);
+  applyOps(s, s.grid, [{ type: "rect", x: 4, y: 4, w: 4, h: 4, color: 9 }]);
   const buf = renderPng(s.grid, s.palette);
   const png = PNG.sync.read(buf);
   assert.equal(png.width, 512);
   assert.equal(png.height, 512);
   // pixel (5,5) in grid coords is inside the rect; png coords = 5*32+16 = 176
+  // palette index 9 = #b13e53
   const idx = (176 * png.width + 176) * 4;
   assert.deepEqual([png.data[idx], png.data[idx + 1], png.data[idx + 2]], [0xb1, 0x3e, 0x53]);
 });

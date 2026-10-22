@@ -45,10 +45,11 @@ Shipped in `.opencode/skills/`, discovered automatically by opencode:
 ## MCP tools
 
 `create_sprite` · `set_palette` / `get_palette` · `draw` (bulk RLE rows /
-rect / pixels / clear, optional mirror) · `get_render` (PNG image result —
-the agent's eyes) · `export_render` (file fallback for hosts without image
-support) · `get_grid` · `list_sprites` / `get_state` · `add_animation` ·
-`copy_frame` · `get_onion_skin` · `export` · `delete_sprite`
+rect / pixels / clear, plus deterministic `outline` and `shift` ops, optional
+mirror) · `get_render` (PNG image result — the agent's eyes) ·
+`export_render` (file fallback for hosts without image support) · `get_grid`
+· `list_sprites` / `get_state` · `add_animation` · `copy_frame` ·
+`get_onion_skin` · `export` · `delete_sprite`
 
 ## Data & export
 
@@ -61,9 +62,21 @@ support) · `get_grid` · `list_sprites` / `get_state` · `add_animation` ·
 
 ## Viewer
 
-`http://localhost:7337` — live preview (updates as the agent draws), palette,
-animation playback with timeline, manual pixel editing (the agent sees your
-hand edits too), export button.
+`http://localhost:7337` — a real editor, not just a preview:
+
+- **Tool palette**: pencil, eraser, eyedropper (or right-click), flood fill,
+  line, rect, and color-replace (click a pixel to swap that color everywhere
+  in the frame). Strokes upload as one batched op on mouse-up.
+- **Undo/redo** (Z / shift+Z): server-side snapshots shared with the agent —
+  you can undo the agent's last change and it can build on yours.
+- **Film strip**: frame thumbnails, click to select, drag to reorder,
+  duplicate/delete, editable fps, play-in-place.
+- **Onion skin** toggle: previous frame ghosted under the current one.
+- **Palette editor**: double-click a swatch to change that color.
+- Zoom 2×–32×/fit, grid overlay, cursor coordinates, keyboard shortcuts
+  (B/E/I/G/L/R/Z/O/space).
+- Live updates via SSE — watch the agent draw in real time; it sees your
+  manual fixes too ("I fixed the eyes, now do the run cycle" works).
 
 ## Development
 
