@@ -37,6 +37,7 @@ Shipped in `.opencode/skills/`, discovered automatically by opencode:
 | Skill | What it teaches the agent |
 |---|---|
 | `sprite-draw` | Full drawing workflow: silhouette → render → critique → detail passes (+ pixel-art fundamentals reference) |
+| `sprite-research` | Style transfer: fetch a reference, study it pixelated to grid size, adopt its extracted palette |
 | `sprite-refine` | Minimal-diff targeted edits, never redraw the whole grid |
 | `sprite-animate` | Keyframe-first animation with onion-skin checks (+ per-type playbook: idle/run/attack/jump/hurt/die) |
 | `palette-design` | Limited ramp-based palettes, shared across character sets |
@@ -44,9 +45,11 @@ Shipped in `.opencode/skills/`, discovered automatically by opencode:
 
 ## MCP tools
 
-`create_sprite` · `set_palette` / `get_palette` · `draw` (bulk RLE rows /
-rect / pixels / clear, plus deterministic `outline` and `shift` ops, optional
-mirror) · `get_render` (PNG image result — the agent's eyes) ·
+`create_sprite` · `resize_sprite` (grow grid for animation headroom) ·
+`fetch_reference` (download → pixelate to grid size → extract palette) ·
+`set_palette` / `get_palette` · `draw` (bulk RLE rows /
+rect / pixels / clear / fill, plus deterministic `outline` and `shift` ops,
+optional mirror) · `get_render` (PNG image result — the agent's eyes) ·
 `export_render` (file fallback for hosts without image support) · `get_grid`
 · `list_sprites` / `get_state` · `add_animation` · `copy_frame` ·
 `get_onion_skin` · `export` · `delete_sprite`

@@ -7,6 +7,8 @@ import { encodeGrid } from "./rle.js";
 import { applyOps, targetGrid, mirrorHorizontal, addAnimation, copyFrame, normalizeHex, resizeSprite, contentBounds, GRID_SIZES, DEFAULT_PALETTE } from "./model.js";
 import { renderPng, renderOnionSkin } from "./render.js";
 import { exportSprite } from "./export.js";
+import { resizeAvg, upscaleNn, extractPalette, fetchReference } from "./reference.js";
+import { PNG } from "pngjs";
 import fs from "node:fs";
 
 export const SERVER_INSTRUCTIONS = `Sprite Studio: draw and animate palette-indexed pixel art via tools.
@@ -399,6 +401,50 @@ export function createMcpServer(storage) {
       resizeSprite(s, width, height);
       storage.save(s);
       return text(`Resized "${sprite}" from ${from} to ${width}x${height} (content bottom-centered, all frames remapped).`);
+    })
+  );
+
+  server.registerTool(
+    "fetch_reference",
+    {
+      description:
+        "Download a reference image for style study. Returns: the original, a pixelated version at " +
+        "the sprite's grid size (showing how much detail actually survives at that resolution), and a " +
+        "quantized palette ready for set_palette. Use BEFORE drawing when the user references a style " +
+        "or quality matters. Prefer CC0/CC-BY sources: kenney.nl, opengameart.org, lospec.com (palettes). " +
+        "PNG only.",
+      inputSchema: {
+        url: z.string().describe("http(s) URL of a PNG image"),
+        sprite: z.string().optional().describe("sprite to match grid size against (default 32)"),
+        colors: z.number().int().min(2).max(31).optional().describe("palette size target (default 12)"),
+      },
+    },
+    safe(async ({ url, sprite, colors }) => {
+      const gridSize = sprite ? storage.get(sprite).width : 32;
+      const { png, path } = await fetchReference(url, storage.referencesDir);
+
+      // original view, capped at 512px on the long edge
+      const cap = 512 / Math.max(png.width, png.height);
+      const original = cap < 1 ? resizeAvg(png, Math.round(png.width * cap), Math.round(png.height * cap)) : png;
+
+      const pixelated = resizeAvg(png, gridSize, gridSize);
+      const display = upscaleNn(pixelated, Math.max(1, Math.floor(512 / gridSize)));
+      const palette = extractPalette(pixelated, colors ?? 12);
+
+      return {
+        content: [
+          { type: "text", text: `Reference saved to ${path} (${png.width}x${png.height}). Below: original, then pixelated to ${gridSize}x${gridSize}.` },
+          { type: "image", data: PNG.sync.write(original).toString("base64"), mimeType: "image/png" },
+          { type: "image", data: PNG.sync.write(display).toString("base64"), mimeType: "image/png" },
+          {
+            type: "text",
+            text:
+              `Extracted palette (${palette.length} colors, most frequent first): ${palette.join(", ")}\n` +
+              `Study the PIXELATED version — that is how much detail survives at ${gridSize}px; do not copy detail that only exists in the original. ` +
+              `The palette is ready for set_palette. Then draw per the sprite-draw workflow; the scale-2 render check still decides when you're done.`,
+          },
+        ],
+      };
     })
   );
 

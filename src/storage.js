@@ -11,12 +11,13 @@ export class Storage {
     this.root = root;
     this.spritesDir = path.join(root, "sprites");
     this.exportsDir = path.join(root, "exports");
+    this.referencesDir = path.join(root, "reference-images");
     this.projectFile = path.join(root, "project.json");
     this.cache = new Map();
     this.listeners = new Set();
     // name -> { undo: string[], redo: string[] } (serialized sprite snapshots)
     this.history = new Map();
-    for (const dir of [this.spritesDir, this.exportsDir]) {
+    for (const dir of [this.spritesDir, this.exportsDir, this.referencesDir]) {
       fs.mkdirSync(dir, { recursive: true });
     }
     if (!fs.existsSync(this.projectFile)) {
