@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sprite Studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #16161e; color: #cdd6f4; display: flex; height: 100vh; }
+  #sidebar { width: 220px; border-right: 1px solid #313244; padding: 12px; overflow-y: auto; }
+  #sidebar h1 { font-size: 16px; margin: 0 0 12px; }
+  .sprite-item { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+  .sprite-item.active, .sprite-item:hover { background: #313244; }
+  #main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 16px; gap: 12px; overflow-y: auto; }
+  #canvas-wrap { background: repeating-conic-gradient(#45475a 0% 25%, #585b70 0% 50%) 0 0/16px 16px; image-rendering: pixelated; }
+  canvas { image-rendering: pixelated; cursor: crosshair; display: block; }
+  #palette { display: flex; flex-wrap: wrap; gap: 4px; max-width: 560px; justify-content: center; }
+  .swatch { width: 28px; height: 28px; border-radius: 4px; border: 2px solid #313244; cursor: pointer; position: relative; }
+  .swatch.active { border-color: #f9e2af; }
+  .swatch.transparent { background: repeating-conic-gradient(#45475a 0% 25%, #585b70 0% 50%) 0 0/8px 8px !important; }
+  .swatch span { position: absolute; bottom: -2px; right: 0; font-size: 9px; color: #a6adc8; text-shadow: 0 0 2px #000; }
+  #toolbar, #timeline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
+  button, select { background: #313244; color: #cdd6f4; border: 1px solid #45475a; border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
+  button:hover { background: #45475a; }
+  button.active { border-color: #89b4fa; }
+  .frame-btn.active { border-color: #a6e3a1; }
+  #status { color: #a6adc8; font-size: 12px; min-height: 16px; }
+  #export-result { font-size: 12px; color: #a6e3a1; white-space: pre-wrap; max-width: 560px; }
+</style>
+</head>
+<body>
+<div id="sidebar"><h1>Sprite Studio</h1><div id="sprites"></div></div>
+<div id="main">
+  <div id="toolbar">
+    <select id="anim-select"><option value="">base sprite</option></select>
+    <button id="play-btn">▶ play</button>
+    <label><input type="checkbox" id="grid-toggle" /> grid</label>
+    <button id="export-btn">export</button>
+  </div>
+  <div id="canvas-wrap"><canvas id="canvas"></canvas></div>
+  <div id="timeline"></div>
+  <div id="palette"></div>
+  <div id="status"></div>
+  <div id="export-result"></div>
+</div>
+<script type="module">
+const state = {
+  sprites: [],
+  current: null,      // sprite object
+  anim: "",           // selected animation name ("" = base)
+  frame: 0,
+  color: 1,
+  playing: false,
+  playTimer: null,
+};
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("canvas");
+const ctx = canvas.getContext("2d");
+
+async function refresh() {
+  const res = await fetch("/api/sprites");
+  const data = await res.json();
+  state.sprites = data.sprites;
+  if (state.current) {
+    state.current = state.sprites.find((s) => s.name === state.current.name) ?? null;
+  }
+  if (!state.current && state.sprites.length) state.current = state.sprites[0];
+  renderSidebar();
+  renderAll();
+}
+
+function renderSidebar() {
+  $("sprites").innerHTML = "";
+  for (const s of state.sprites) {
+    const div = document.createElement("div");
+    div.className = "sprite-item" + (state.current?.name === s.name ? " active" : "");
+    div.textContent = `${s.name} (${s.width}×${s.height})`;
+    div.onclick = () => { state.current = s; state.anim = ""; state.frame = 0; stopPlay(); renderAll(); renderSidebar(); };
+    $("sprites").appendChild(div);
+  }
+}
+
+function currentGrid() {
+  const s = state.current;
+  if (!s) return null;
+  if (!state.anim) return s.grid;
+  return s.animations[state.anim]?.frames[state.frame] ?? s.grid;
+}
+
+function hexToRgba(hex) {
+  const m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex);
+  if (!m) return [0, 0, 0, 0];
+  return [parseInt(m[1].slice(0,2),16), parseInt(m[1].slice(2,4),16), parseInt(m[1].slice(4,6),16), m[2] ? parseInt(m[2],16) : 255];
+}
+
+function draw() {
+  const s = state.current;
+  const grid = currentGrid();
+  if (!s || !grid) { canvas.width = canvas.height = 0; return; }
+  const scale = Math.max(4, Math.floor(512 / Math.max(s.width, s.height)));
+  canvas.width = s.width * scale;
+  canvas.height = s.height * scale;
+  const colors = s.palette.map(hexToRgba);
+  for (let y = 0; y < s.height; y++) {
+    for (let x = 0; x < s.width; x++) {
+      const c = colors[grid[y][x]];
+      if (!c || c[3] === 0) continue;
+      ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${c[3]/255})`;
+      ctx.fillRect(x * scale, y * scale, scale, scale);
+    }
+  }
+  if ($("grid-toggle").checked && scale >= 8) {
+    ctx.strokeStyle = "rgba(30,30,46,0.5)";
+    for (let i = 0; i <= s.width; i++) { ctx.beginPath(); ctx.moveTo(i*scale,0); ctx.lineTo(i*scale,canvas.height); ctx.stroke(); }
+    for (let i = 0; i <= s.height; i++) { ctx.beginPath(); ctx.moveTo(0,i*scale); ctx.lineTo(canvas.width,i*scale); ctx.stroke(); }
+  }
+}
+
+function renderPalette() {
+  const s = state.current;
+  $("palette").innerHTML = "";
+  if (!s) return;
+  s.palette.forEach((hex, i) => {
+    const d = document.createElement("div");
+    d.className = "swatch" + (i === 0 ? " transparent" : "") + (i === state.color ? " active" : "");
+    if (i !== 0) d.style.background = hex;
+    d.title = `${i}: ${hex}`;
+    d.innerHTML = `<span>${i}</span>`;
+    d.onclick = () => { state.color = i; renderPalette(); };
+    $("palette").appendChild(d);
+  });
+}
+
+function renderAnimSelect() {
+  const s = state.current;
+  const sel = $("anim-select");
+  sel.innerHTML = '<option value="">base sprite</option>';
+  if (!s) return;
+  for (const name of Object.keys(s.animations)) {
+    const o = document.createElement("option");
+    o.value = name;
+    o.textContent = `${name} (${s.animations[name].frames.length}f @ ${s.animations[name].fps}fps)`;
+    sel.appendChild(o);
+  }
+  sel.value = state.anim;
+}
+
+function renderTimeline() {
+  const tl = $("timeline");
+  tl.innerHTML = "";
+  const s = state.current;
+  if (!s || !state.anim) return;
+  s.animations[state.anim].frames.forEach((_, i) => {
+    const b = document.createElement("button");
+    b.className = "frame-btn" + (i === state.frame ? " active" : "");
+    b.textContent = `f${i}`;
+    b.onclick = () => { state.frame = i; stopPlay(); renderAll(); };
+    tl.appendChild(b);
+  });
+}
+
+function renderAll() {
+  renderAnimSelect();
+  renderPalette();
+  renderTimeline();
+  draw();
+  $("status").textContent = state.current ? `${state.current.name} v${state.current.version}` : "no sprites — ask your agent to draw one";
+}
+
+// --- editing ---
+let painting = false;
+function paintAt(ev) {
+  const s = state.current;
+  if (!s) return;
+  const rect = canvas.getBoundingClientRect();
+  const scale = canvas.width / s.width;
+  const x = Math.floor((ev.clientX - rect.left) / scale);
+  const y = Math.floor((ev.clientY - rect.top) / scale);
+  if (x < 0 || y < 0 || x >= s.width || y >= s.height) return;
+  const grid = currentGrid();
+  if (grid[y][x] === state.color) return;
+  grid[y][x] = state.color; // optimistic
+  draw();
+  fetch(`/api/sprite/${s.name}/pixel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ x, y, color: state.color, ...(state.anim ? { anim: state.anim, frame: state.frame } : {}) }),
+  });
+}
+canvas.addEventListener("mousedown", (ev) => { painting = true; paintAt(ev); });
+canvas.addEventListener("mousemove", (ev) => painting && paintAt(ev));
+addEventListener("mouseup", () => (painting = false));
+
+// --- playback ---
+function stopPlay() { state.playing = false; clearInterval(state.playTimer); $("play-btn").textContent = "▶ play"; }
+$("play-btn").onclick = () => {
+  const s = state.current;
+  if (!s || !state.anim) return;
+  if (state.playing) return stopPlay();
+  state.playing = true;
+  $("play-btn").textContent = "⏸ stop";
+  const anim = s.animations[state.anim];
+  state.playTimer = setInterval(() => {
+    state.frame = (state.frame + 1) % anim.frames.length;
+    renderTimeline();
+    draw();
+  }, 1000 / anim.fps);
+};
+$("anim-select").onchange = (e) => { state.anim = e.target.value; state.frame = 0; stopPlay(); renderAll(); };
+$("grid-toggle").onchange = draw;
+$("export-btn").onclick = async () => {
+  if (!state.current) return;
+  const res = await fetch(`/api/export/${state.current.name}`, { method: "POST" });
+  const data = await res.json();
+  $("export-result").textContent = data.error ? `Error: ${data.error}` : `PNG:  ${data.png}\nJSON: ${data.json}`;
+};
+
+// --- live updates ---
+new EventSource("/api/events").onmessage = () => refresh();
+
+refresh();
+</script>
+</body>
+</html>

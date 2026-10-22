@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "sprite-studio": {
+        "type": "remote",
+        "url": "http://localhost:7337/mcp",
+        "oauth": false,
+        // codemode disabled so image tool results (renders) reach the model
+        // directly. Re-enable if your harness handles images under Code Mode.
+        "codemode": false,
+      },
+    },
+  },
+}

@@ -1,0 +1,94 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { encodeGrid, decodeGrid, encodeRow, decodeRow } from "../src/rle.js";
+import { createSprite, applyOps, targetGrid, mirrorHorizontal, addAnimation, copyFrame } from "../src/model.js";
+
+test("rle row roundtrip", () => {
+  const row = [0, 0, 3, 3, 3, 0, 0, 0];
+  assert.equal(encodeRow(row), "2:0,3:3,3:0");
+  assert.deepEqual(decodeRow("2:0,3:3,3:0", 8), row);
+});
+
+test("rle grid roundtrip", () => {
+  const grid = [
+    [0, 0, 0, 0],
+    [0, 5, 5, 0],
+    [1, 1, 1, 1],
+  ];
+  const rle = encodeGrid(grid);
+  assert.equal(rle, "4:0;1:0,2:5,1:0;4:1");
+  assert.deepEqual(decodeGrid(rle, 4, 3), grid);
+});
+
+test("decodeRow rejects wrong width and malformed runs", () => {
+  assert.throws(() => decodeRow("2:0,2:0", 8), /expected width 8/);
+  assert.throws(() => decodeRow("x:0", 8), /malformed run/);
+  assert.throws(() => decodeRow("0:3,8:0", 8), /zero count/);
+});
+
+test("createSprite validates name and size", () => {
+  assert.throws(() => createSprite("bad name!", 16, 16), /invalid sprite name/);
+  assert.throws(() => createSprite("ok", 20, 20), /grid size/);
+  const s = createSprite("wiz", 32, 32);
+  assert.equal(s.grid.length, 32);
+  assert.equal(s.palette[0], "#00000000");
+});
+
+test("applyOps rows + rect + pixels + clear", () => {
+  const s = createSprite("t", 16, 16);
+  const grid = s.grid;
+  applyOps(s, grid, [{ type: "rows", rows: "3:0,2:5,11:0", y: 4 }]);
+  assert.equal(grid[4][3], 5);
+  assert.equal(grid[4][4], 5);
+  assert.equal(grid[4][5], 0);
+
+  applyOps(s, grid, [{ type: "rect", x: 0, y: 0, w: 2, h: 2, color: 7 }]);
+  assert.equal(grid[1][1], 7);
+
+  applyOps(s, grid, [{ type: "pixels", pixels: [{ x: 15, y: 15, color: 2 }] }]);
+  assert.equal(grid[15][15], 2);
+
+  applyOps(s, grid, [{ type: "clear" }]);
+  assert.equal(grid[1][1], 0);
+  assert.equal(grid[15][15], 0);
+});
+
+test("applyOps validates color, bounds, pixel batch size", () => {
+  const s = createSprite("t", 16, 16);
+  assert.throws(() => applyOps(s, s.grid, [{ type: "rect", x: 0, y: 0, w: 1, h: 1, color: 99 }]), /out of palette range/);
+  assert.throws(() => applyOps(s, s.grid, [{ type: "rect", x: 15, y: 0, w: 2, h: 1, color: 1 }]), /out of bounds/);
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "pixels", pixels: Array.from({ length: 513 }, (_, i) => ({ x: 0, y: 0, color: 1, i })) }]),
+    /exceeds limit/
+  );
+  assert.throws(() => applyOps(s, s.grid, [{ type: "rows", rows: "16:1", y: 16 }]), /exceed grid height/);
+});
+
+test("mirrorHorizontal mirrors left to right", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "pixels", pixels: [{ x: 2, y: 5, color: 3 }] }]);
+  mirrorHorizontal(s, s.grid);
+  assert.equal(s.grid[5][13], 3);
+});
+
+test("animations: add, target frame, copy", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "pixels", pixels: [{ x: 1, y: 1, color: 4 }] }]);
+  addAnimation(s, "run", 4, 10);
+  assert.equal(s.animations.run.frames.length, 4);
+  // frame 0 is a copy of base
+  assert.equal(s.animations.run.frames[0][1][1], 4);
+  // frames 1+ blank
+  assert.equal(s.animations.run.frames[1][1][1], 0);
+
+  copyFrame(s, "run", 0, 2);
+  assert.equal(s.animations.run.frames[2][1][1], 4);
+
+  const g = targetGrid(s, { anim: "run", index: 3 });
+  applyOps(s, g, [{ type: "pixels", pixels: [{ x: 8, y: 8, color: 9 }] }]);
+  assert.equal(s.animations.run.frames[3][8][8], 9);
+
+  assert.throws(() => addAnimation(s, "run", 4, 10), /already exists/);
+  assert.throws(() => targetGrid(s, { anim: "nope", index: 0 }), /no animation/);
+  assert.throws(() => copyFrame(s, "run", 0, 9), /out of range/);
+});
