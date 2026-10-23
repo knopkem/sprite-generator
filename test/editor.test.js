@@ -49,6 +49,51 @@ test("resizeSprite grows bottom-centered and remaps all frames", () => {
   assert.throws(() => resizeSprite(s, 20, 20), /grid size/);
 });
 
+test("line draws horizontal, vertical, diagonal; thickness clips at edges", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [
+    { type: "line", x0: 0, y0: 0, x1: 5, y1: 0, color: 1 }, // horizontal
+    { type: "line", x0: 8, y0: 2, x1: 8, y1: 7, color: 2 }, // vertical
+    { type: "line", x0: 10, y0: 10, x1: 14, y1: 14, color: 3 }, // diagonal
+  ]);
+  for (let x = 0; x <= 5; x++) assert.equal(s.grid[0][x], 1);
+  for (let y = 2; y <= 7; y++) assert.equal(s.grid[y][8], 2);
+  for (let i = 0; i <= 4; i++) assert.equal(s.grid[10 + i][10 + i], 3);
+
+  // thick line near the edge must not throw, spillover clipped
+  applyOps(s, s.grid, [{ type: "line", x0: 0, y0: 0, x1: 0, y1: 3, color: 4, thickness: 2 }]);
+  assert.equal(s.grid[2][0], 4);
+
+  assert.throws(() => applyOps(s, s.grid, [{ type: "line", x0: 0, y0: 0, x1: 16, y1: 0, color: 1 }]), /out of bounds/);
+});
+
+test("ellipse filled and ring", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "ellipse", cx: 8, cy: 8, rx: 3, ry: 2, color: 5 }]);
+  assert.equal(s.grid[8][8], 5); // center filled
+  assert.equal(s.grid[8][11], 5); // right edge
+  assert.equal(s.grid[8][4], 0); // outside rx
+
+  applyOps(s, s.grid, [{ type: "clear" }, { type: "ellipse", cx: 8, cy: 8, rx: 3, ry: 3, color: 6, filled: false }]);
+  assert.equal(s.grid[8][11], 6); // ring boundary
+  assert.equal(s.grid[8][8], 0); // interior hollow
+});
+
+test("block pastes variable-width RLE rows with bounds checks", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "block", x: 4, y: 5, rows: "2:7,1:0,1:8;4:9" }]);
+  assert.equal(s.grid[5][4], 7);
+  assert.equal(s.grid[5][5], 7);
+  assert.equal(s.grid[5][6], 0);
+  assert.equal(s.grid[5][7], 8);
+  assert.equal(s.grid[6][4], 9);
+  assert.equal(s.grid[6][7], 9);
+
+  assert.throws(() => applyOps(s, s.grid, [{ type: "block", x: 14, y: 0, rows: "3:1" }]), /exceeds grid width/);
+  assert.throws(() => applyOps(s, s.grid, [{ type: "block", x: 0, y: 15, rows: "1:1;1:1" }]), /out of bounds/);
+  assert.throws(() => applyOps(s, s.grid, [{ type: "block", x: 0, y: 0, rows: "x:1" }]), /block row 0/);
+});
+
 test("contentBounds measures headroom and handles empty grids", () => {
   const s = createSprite("t", 16, 16);
   assert.equal(contentBounds(s.grid), null);

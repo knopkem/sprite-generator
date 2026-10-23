@@ -29,6 +29,15 @@ export function encodeGrid(grid) {
  * @returns {number[]}
  */
 export function decodeRow(rle, width) {
+  const row = decodeRuns(rle);
+  if (row.length !== width) {
+    throw new Error(`row decodes to ${row.length} pixels, expected width ${width}`);
+  }
+  return row;
+}
+
+/** Decode RLE runs without a width requirement (for "block" ops). */
+export function decodeRuns(rle) {
   const row = [];
   if (rle.trim() === "") throw new Error("empty row");
   for (const run of rle.split(",")) {
@@ -38,9 +47,6 @@ export function decodeRow(rle, width) {
     const idx = Number(m[2]);
     if (count === 0) throw new Error(`run with zero count in "${run}"`);
     for (let i = 0; i < count; i++) row.push(idx);
-  }
-  if (row.length !== width) {
-    throw new Error(`row decodes to ${row.length} pixels, expected width ${width}`);
   }
   return row;
 }

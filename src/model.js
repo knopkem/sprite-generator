@@ -9,7 +9,7 @@
 //   version: number
 // }
 
-import { decodeRow } from "./rle.js";
+import { decodeRow, decodeRuns } from "./rle.js";
 
 export const GRID_SIZES = [16, 24, 32, 48, 64];
 export const MAX_PIXELS_PER_OP = 512;
@@ -168,6 +168,77 @@ export function applyOps(sprite, grid, ops) {
                   (y < sprite.height - 1 && x < sprite.width - 1 && snapshot[y + 1][x + 1] !== 0)));
             if (touchesOpaque) grid[y][x] = c;
           }
+        }
+        break;
+      }
+      case "line": {
+        // Bresenham line; thickness paints a centered square brush (clipped at edges).
+        checkColor(sprite, op.color);
+        checkBounds(sprite, op.x0, op.y0);
+        checkBounds(sprite, op.x1, op.y1);
+        const th = op.thickness ?? 1;
+        const off = Math.floor((th - 1) / 2);
+        let [x0, y0] = [op.x0, op.y0];
+        const dx = Math.abs(op.x1 - x0);
+        const dy = -Math.abs(op.y1 - y0);
+        const sx = x0 < op.x1 ? 1 : -1;
+        const sy = y0 < op.y1 ? 1 : -1;
+        let err = dx + dy;
+        for (;;) {
+          for (let oy = 0; oy < th; oy++) {
+            for (let ox = 0; ox < th; ox++) {
+              const px = x0 - off + ox;
+              const py = y0 - off + oy;
+              if (px >= 0 && px < sprite.width && py >= 0 && py < sprite.height) grid[py][px] = op.color;
+            }
+          }
+          if (x0 === op.x1 && y0 === op.y1) break;
+          const e2 = 2 * err;
+          if (e2 >= dy) { err += dy; x0 += sx; }
+          if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+        break;
+      }
+      case "ellipse": {
+        // Filled ellipse (default) or 1px ring (filled: false), centered at (cx, cy).
+        checkColor(sprite, op.color);
+        const { cx, cy, rx, ry } = op;
+        const inside = (x, y) => {
+          const nx = (x - cx) / (rx + 0.5);
+          const ny = (y - cy) / (ry + 0.5);
+          return nx * nx + ny * ny <= 1;
+        };
+        for (let y = Math.max(0, cy - ry); y <= Math.min(sprite.height - 1, cy + ry); y++) {
+          for (let x = Math.max(0, cx - rx); x <= Math.min(sprite.width - 1, cx + rx); x++) {
+            if (!inside(x, y)) continue;
+            if (op.filled === false) {
+              const boundary = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1);
+              if (!boundary) continue;
+            }
+            grid[y][x] = op.color;
+          }
+        }
+        break;
+      }
+      case "block": {
+        // RLE rows pasted at (x, y); each row has its own width (no full-grid sum).
+        const rows = op.rows.split(";").map((r, i) => {
+          let row;
+          try {
+            row = decodeRuns(r);
+          } catch (e) {
+            throw new Error(`${where}, block row ${i}: ${e.message}`);
+          }
+          for (const v of row) checkColor(sprite, v);
+          return row;
+        });
+        for (const [dy, row] of rows.entries()) {
+          const y = op.y + dy;
+          if (y < 0 || y >= sprite.height) throw new Error(`${where}, block row ${dy}: y=${y} out of bounds (height ${sprite.height})`);
+          if (op.x < 0 || op.x + row.length > sprite.width) {
+            throw new Error(`${where}, block row ${dy}: x=${op.x} + width ${row.length} exceeds grid width ${sprite.width}`);
+          }
+          for (let dx = 0; dx < row.length; dx++) grid[y][op.x + dx] = row[dx];
         }
         break;
       }

@@ -16,9 +16,10 @@ export const SERVER_INSTRUCTIONS = `Sprite Studio: draw and animate palette-inde
 Contract (read before drawing):
 - Grids are ${GRID_SIZES.join("/")} px. Default 32. Above 32 quality degrades — warn the user.
 - Palette index 0 is ALWAYS transparent. Reference colors by index only.
-- Draw in BULK: use draw with "rows" ops (RLE strings), not individual pixels.
-  RLE row format: "count:index,count:index" per row, rows joined by ";".
-  Example width 8: "8:0" = empty row; "2:0,4:3,2:0" = four px of color 3 centered.
+- Draw in BULK with shape ops, not scanline math: ellipse for heads/round
+  shapes, line for limbs/props/arcs, rect for blocks, block for local RLE
+  regions (rows have independent widths), rows (full-width RLE, must sum to
+  grid width) only for whole-sprite fills. Never hundreds of single pixels.
 - Workflow: set_palette (optional) -> draw silhouette -> get_render -> critique
   the render honestly -> fix with small draw patches -> repeat until good.
 - ALWAYS get_render after each drawing pass. Never claim success without looking.
@@ -80,6 +81,30 @@ const drawOp = z.discriminatedUnion("type", [
     x: z.number().int(),
     y: z.number().int(),
     color: z.number().int().min(0),
+  }),
+  z.object({
+    type: z.literal("line"),
+    x0: z.number().int(),
+    y0: z.number().int(),
+    x1: z.number().int(),
+    y1: z.number().int(),
+    color: z.number().int().min(0),
+    thickness: z.number().int().min(1).max(4).optional(),
+  }),
+  z.object({
+    type: z.literal("ellipse"),
+    cx: z.number().int(),
+    cy: z.number().int(),
+    rx: z.number().int().min(1),
+    ry: z.number().int().min(1),
+    color: z.number().int().min(0),
+    filled: z.boolean().optional().describe("default true; false = 1px ring"),
+  }),
+  z.object({
+    type: z.literal("block"),
+    x: z.number().int(),
+    y: z.number().int(),
+    rows: z.string().describe('RLE rows pasted at (x,y); each row has its own width, e.g. "2:3,1:0,1:4;4:3"'),
   }),
   z.object({
     type: z.literal("shift"),
@@ -223,8 +248,10 @@ export function createMcpServer(storage) {
     {
       description:
         "Apply bulk draw ops to the base sprite or one animation frame. Ops run in order. " +
-        'Prefer "rows" ops with RLE strings for shapes — one op can fill the whole grid. ' +
-        'Use "pixels" (max 512) and "rect" for small fixes, "clear" to wipe. ' +
+        "Think in shapes, not scanlines: ellipse for heads/round shapes, line for limbs/props/arcs, " +
+        "rect for blocks, block for a small local RLE region (rows have independent widths), " +
+        'rows (full-width RLE, each row must sum to grid width) for whole-sprite fills. ' +
+        'Use "pixels" (max 512) for small fixes, "clear" to wipe. ' +
         '"outline" wraps the silhouette in an outline color automatically (draw flat shapes first, outline after). ' +
         '"fill" flood-fills a region from a point. ' +
         '"shift" translates the whole grid by dx/dy (animation bob/squash). ' +

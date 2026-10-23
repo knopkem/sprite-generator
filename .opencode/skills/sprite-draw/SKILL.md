@@ -19,11 +19,16 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
    specific art direction. Read `.opencode/skills/sprite-draw/references/pixel-art-basics.md`
    (path from the project root) if unsure.
 
-3. **Silhouette pass.** Draw ONLY the overall shape in 1-2 mid-tone colors
-   using one `draw` call with `rows` ops (RLE). For symmetric characters, draw
+3. **Silhouette pass.** Draw ONLY the overall shape in 1-2 mid-tone colors.
+   **Think in shapes, not scanlines**: `ellipse` for heads/domes, `line` for
+   limbs/props/weapon arcs (a bow is 3-4 line segments, not 15 hand-computed
+   rows), `rect` for torsos, `block` for small local RLE regions. Reserve
+   full-width `rows` for whole-sprite fills. For symmetric characters, draw
    the left half and pass `mirror: true`. A good silhouette reads at thumbnail
    size — that is the whole game. **Do not hand-draw outlines** — finish the
    pass with an `outline` op, which wraps the shape automatically.
+   At 16-32px, iconic beats anatomical: simplify the pose until it reads,
+   never chase realism the grid can't hold.
 
 4. **Look at it.** Call `get_render`. Critique honestly against the brief:
    proportions? readable? lopsided? Fix with small patches before proceeding.
@@ -52,7 +57,8 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
   drawn edge-to-edge forces clipped or cramped poses later. If an existing
   sprite is already too tight, `resize_sprite` grows the grid (content stays
   bottom-centered) instead of redrawing.
-- RLE reminder: `"count:index"` runs, `;` between rows. Row must sum to
-  exactly the grid width.
+- RLE reminder: `"count:index"` runs, `;` between rows. `rows` ops are
+  full-width and must sum to the grid width; `block` ops paste at (x,y) with
+  independent row widths.
 - Prefer deterministic ops over hand-drawn polish: `outline` for silhouettes,
   `shift` to move a frame, `mirror: true` for symmetry.

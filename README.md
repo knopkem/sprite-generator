@@ -47,9 +47,9 @@ Shipped in `.opencode/skills/`, discovered automatically by opencode:
 
 `create_sprite` · `resize_sprite` (grow grid for animation headroom) ·
 `fetch_reference` (download → pixelate to grid size → extract palette) ·
-`set_palette` / `get_palette` · `draw` (bulk RLE rows /
-rect / pixels / clear / fill, plus deterministic `outline` and `shift` ops,
-optional mirror) · `get_render` (PNG image result — the agent's eyes) ·
+`set_palette` / `get_palette` · `draw` (shape ops: `ellipse`, `line`, `rect`,
+`block`; bulk `rows` RLE; `pixels`/`clear`/`fill`; deterministic `outline` and
+`shift`; optional mirror) · `get_render` (PNG image result — the agent's eyes) ·
 `export_render` (file fallback for hosts without image support) · `get_grid`
 · `list_sprites` / `get_state` · `add_animation` · `copy_frame` ·
 `get_onion_skin` · `export` · `delete_sprite`
