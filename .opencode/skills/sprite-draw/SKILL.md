@@ -16,7 +16,8 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
 2. **Palette.** The default palette is ramp-based — each hue family has
    light/mid/dark as adjacent indices (check `get_palette`). Shade with the
    darker neighbor, highlight with the lighter. Only call `set_palette` for a
-   specific art direction. Read `references/pixel-art-basics.md` if unsure.
+   specific art direction. Read `.opencode/skills/sprite-draw/references/pixel-art-basics.md`
+   (path from the project root) if unsure.
 
 3. **Silhouette pass.** Draw ONLY the overall shape in 1-2 mid-tone colors
    using one `draw` call with `rows` ops (RLE). For symmetric characters, draw
@@ -30,8 +31,9 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
 
 5. **Detail passes.** Add shading (ramp neighbors), face, gear — one `draw`
    call per pass, `get_render` after each. 2-4 detail passes is normal.
-   See `references/worked-example.md` for a complete real session — match
-   that economy of tool calls.
+   See `.opencode/skills/sprite-draw/references/worked-example.md` (path from
+   the project root) for a complete real session — match that economy of
+   tool calls.
 
 6. **Done when:** you have rendered at `scale: 2` and the sprite still reads
    clearly at game size, AND the user approves. If it only looks good at

@@ -10,8 +10,9 @@ every frame must remain recognizably the same character.
 
 ## Process
 
-1. **Read `references/animation-playbook.md`** for the requested animation
-   type (frame counts, fps, pose breakdowns).
+1. **Read `.opencode/skills/sprite-animate/references/animation-playbook.md`**
+   (path from the project root) for the requested animation type (frame
+   counts, fps, pose breakdowns).
 
 2. **Create the animation**: `add_animation`. Frame 0 is auto-copied from the
    base sprite.
