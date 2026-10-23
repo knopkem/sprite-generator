@@ -14,7 +14,36 @@ function renderSidebar() {
   for (const s of state.sprites) {
     const div = document.createElement("div");
     div.className = "sprite-item" + (state.current?.name === s.name ? " active" : "");
-    div.textContent = `${s.name} (${s.width}×${s.height})`;
+
+    const label = document.createElement("span");
+    label.className = "sprite-name";
+    label.textContent = `${s.name} (${s.width}×${s.height})`;
+    div.appendChild(label);
+
+    const del = document.createElement("button");
+    const animCount = Object.keys(s.animations ?? {}).length;
+    del.className = "sprite-delete";
+    del.type = "button";
+    del.textContent = "🗑";
+    del.title = `delete "${s.name}"${animCount ? ` and its ${animCount} animation${animCount === 1 ? "" : "s"}` : ""}`;
+    del.setAttribute("aria-label", del.title);
+    del.onclick = async (ev) => {
+      ev.stopPropagation();
+      const extra = animCount ? ` and its ${animCount} animation${animCount === 1 ? "" : "s"}` : "";
+      if (!confirm(`Delete "${s.name}"${extra}? This cannot be undone.`)) return;
+      const wasCurrent = state.current?.name === s.name;
+      if (wasCurrent) stopPlay();
+      const deleted = await api.deleteSprite(s.name);
+      if (!deleted) return;
+      if (wasCurrent) {
+        state.current = null;
+        state.anim = "";
+        state.frame = 0;
+      }
+      await api.load();
+    };
+    div.appendChild(del);
+
     div.onclick = () => {
       state.current = s;
       state.anim = "";

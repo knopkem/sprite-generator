@@ -43,15 +43,20 @@ export function hexToRgba(hex) {
   ];
 }
 
-async function post(url, body) {
+async function request(url, method, body) {
   const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body ?? {}),
+    method,
+    ...(body !== undefined
+      ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+      : {}),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
+}
+
+function post(url, body) {
+  return request(url, "POST", body ?? {});
 }
 
 async function guard(promise) {
@@ -97,4 +102,6 @@ export const api = {
   },
   resize: (width, height) => guard(post(`/api/sprite/${state.current.name}/resize`, { width, height })),
   exportSprite: () => guard(post(`/api/export/${state.current.name}`)),
+  deleteSprite: (name = state.current?.name) =>
+    guard(request(`/api/sprite/${encodeURIComponent(name)}`, "DELETE")),
 };

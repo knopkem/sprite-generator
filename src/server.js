@@ -179,6 +179,16 @@ async function handleApi(req, res, url) {
     }
   }
 
+  m = /^\/api\/sprite\/([\w-]+)$/.exec(p);
+  if (m && req.method === "DELETE") {
+    try {
+      storage.delete(m[1]);
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
   m = /^\/api\/export\/([\w-]+)$/.exec(p);
   if (m && req.method === "POST") {
     try {

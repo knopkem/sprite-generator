@@ -74,6 +74,8 @@ Shipped in `.opencode/skills/`, discovered automatically by opencode:
   you can undo the agent's last change and it can build on yours.
 - **Film strip**: frame thumbnails, click to select, drag to reorder,
   duplicate/delete, editable fps, play-in-place.
+- **Delete sprite**: the 🗑 button beside each sprite in the sidebar
+  confirms, then removes the sprite and all its animations.
 - **Onion skin** toggle: previous frame ghosted under the current one.
 - **Palette editor**: double-click a swatch to change that color.
 - Zoom 2×–32×/fit, grid overlay, cursor coordinates, keyboard shortcuts
