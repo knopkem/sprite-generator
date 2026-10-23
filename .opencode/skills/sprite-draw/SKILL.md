@@ -12,6 +12,9 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
 1. **Clarify the brief.** Extract: subject, mood, distinguishing features
    (e.g. "wizard: pointy hat, long robe, staff"). If the user gave no size,
    use 32x32. If they ask for >32, warn once about quality, then proceed.
+   **Complex or unfamiliar subjects** (animals, riders, archers with bows,
+   vehicles, instruments): fetch a reference first (sprite-research skill) —
+   do not reason about their anatomy from imagination.
 
 2. **Palette.** The default palette is ramp-based — each hue family has
    light/mid/dark as adjacent indices (check `get_palette`). Shade with the
@@ -49,6 +52,9 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
 
 - Bulk ops only. A full sprite = 1-3 `draw` calls for the base, plus small
   patches. Never emit hundreds of single-pixel ops.
+- Redrawing the whole grid IS allowed during the initial silhouette phase
+  (before the user approves the base). The no-redraw rule applies to
+  refinement afterwards.
 - Palette index 0 is transparent. Leave breathing room — don't fill the grid
   edge to edge unless the sprite is a tile.
 - Keep sprites centered, feet on the bottom row area — and draw the character

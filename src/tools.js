@@ -4,7 +4,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { encodeGrid } from "./rle.js";
-import { applyOps, targetGrid, mirrorHorizontal, addAnimation, copyFrame, normalizeHex, resizeSprite, contentBounds, GRID_SIZES, DEFAULT_PALETTE } from "./model.js";
+import { applyOps, targetGrid, mirrorHorizontal, addAnimation, copyFrame, normalizeHex, resizeSprite, contentBounds, GRID_SIZES, DEFAULT_PALETTE, PALETTE_FAMILIES } from "./model.js";
 import { renderPng, renderOnionSkin } from "./render.js";
 import { exportSprite } from "./export.js";
 import { resizeAvg, upscaleNn, extractPalette, fetchReference } from "./reference.js";
@@ -236,10 +236,22 @@ export function createMcpServer(storage) {
 
   server.registerTool(
     "get_palette",
-    { description: "Get the sprite palette as an indexed list.", inputSchema: { sprite: z.string() } },
+    { description: "Get the sprite palette as an indexed list. On the default palette, entries are annotated with their ramp family.", inputSchema: { sprite: z.string() } },
     safe(({ sprite }) => {
       const s = storage.get(sprite);
-      return text(s.palette.map((c, i) => `${i}: ${c}${i === 0 ? " (transparent)" : ""}`).join("\n"));
+      const isDefault =
+        s.palette.length === DEFAULT_PALETTE.length && s.palette.every((c, i) => c === DEFAULT_PALETTE[i]);
+      const lines = s.palette.map((c, i) => {
+        const label = i === 0 ? "transparent" : isDefault ? PALETTE_FAMILIES[i] : null;
+        return `${i}: ${c}${label ? ` (${label})` : ""}`;
+      });
+      if (isDefault) {
+        lines.push(
+          "Ramp families: shading = neighbor index within a family (e.g. green 13 light / 14 mid / 15 dark). " +
+            "Distinct props (bow, quiver, clothing) should use DIFFERENT families — same-hue adjacent elements read as one blob."
+        );
+      }
+      return text(lines.join("\n"));
     })
   );
 

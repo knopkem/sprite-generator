@@ -43,6 +43,36 @@ export const DEFAULT_PALETTE = [
   "#5c3a2e", // 23 brown dark
 ];
 
+// Hue/ramp family labels for DEFAULT_PALETTE (index-aligned). Surfaced by
+// get_palette so agents can see which indices are shading neighbors and which
+// families are distinct — preventing "two props in the same hue" clashes.
+export const PALETTE_FAMILIES = [
+  "transparent",
+  "outline",
+  "neutral (white)",
+  "neutral (light gray)",
+  "neutral (dark gray)",
+  "skin light",
+  "skin mid",
+  "skin dark",
+  "red light",
+  "red mid",
+  "red dark",
+  "gold light",
+  "gold dark",
+  "green light",
+  "green mid",
+  "green dark",
+  "blue lightest (cyan)",
+  "blue light",
+  "blue mid",
+  "blue dark",
+  "purple light",
+  "purple dark",
+  "brown",
+  "brown dark",
+];
+
 export function normalizeHex(hex) {
   const m = /^#?([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$/.exec(hex.trim());
   if (!m) throw new Error(`invalid hex color "${hex}", expected #rrggbb or #rrggbbaa`);
