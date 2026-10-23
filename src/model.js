@@ -131,6 +131,8 @@ function checkBounds(sprite, x, y) {
  *   { type: "rect", x, y, w, h, color }
  *   { type: "pixels", pixels: [{x, y, color}, ...] }  — max MAX_PIXELS_PER_OP
  *   { type: "clear", color?: 0 }
+ *   { type: "litEllipse", cx, cy, rx, ry, ramp: [light, mid, dark], light?: [x, y], hi?, lo?, dither? }
+ *   { type: "rampRect", x, y, w, h, ramp: [...], dir?: "v"|"h" }
  */
 export function applyOps(sprite, grid, ops) {
   for (const [i, op] of ops.entries()) {
@@ -246,6 +248,51 @@ export function applyOps(sprite, grid, ops) {
               if (!boundary) continue;
             }
             grid[y][x] = op.color;
+          }
+        }
+        break;
+      }
+      case "litEllipse": {
+        // Lambert-shaded ellipse: a per-pixel light term maps onto a 3-color
+        // ramp [light, mid, dark]; ordered dither softens the band boundaries.
+        // One op replaces a whole hand-placed shading pass. Unlike "ellipse",
+        // cx/cy/rx/ry may be fractional (e.g. 15.5 centers on even grids).
+        for (const c of op.ramp) checkColor(sprite, c);
+        const [rl, rm, rd] = op.ramp;
+        let [lx, ly] = op.light ?? [-0.6, -0.75];
+        const len = Math.hypot(lx, ly);
+        if (len < 1e-6) { lx = -0.6; ly = -0.75; } else { lx /= len; ly /= len; }
+        const hi = op.hi ?? 0.42;
+        const lo = op.lo ?? -0.38;
+        const dither = op.dither !== false;
+        const { cx, cy, rx, ry } = op;
+        for (let y = Math.max(0, Math.floor(cy - ry - 1)); y <= Math.min(sprite.height - 1, Math.ceil(cy + ry + 1)); y++) {
+          for (let x = Math.max(0, Math.floor(cx - rx - 1)); x <= Math.min(sprite.width - 1, Math.ceil(cx + rx + 1)); x++) {
+            const nx = (x - cx) / (rx + 0.5);
+            const ny = (y - cy) / (ry + 0.5);
+            if (nx * nx + ny * ny > 1) continue;
+            const lam = lx * nx + ly * ny;
+            let c = lam > hi ? rl : lam < lo ? rd : rm;
+            if (dither) {
+              if (Math.abs(lam - hi) < 0.1 && (x + y) % 2 === 0) c = rl;
+              else if (Math.abs(lam - lo) < 0.1 && (x + y) % 2 === 0) c = rd;
+            }
+            grid[y][x] = c;
+          }
+        }
+        break;
+      }
+      case "rampRect": {
+        // Gradient rect: ramp[0] at the top/left -> ramp[last] at bottom/right.
+        checkBounds(sprite, op.x, op.y);
+        checkBounds(sprite, op.x + op.w - 1, op.y + op.h - 1);
+        for (const c of op.ramp) checkColor(sprite, c);
+        const horizontal = op.dir === "h";
+        const span = horizontal ? op.w : op.h;
+        for (let i = 0; i < span; i++) {
+          const c = op.ramp[Math.min(op.ramp.length - 1, Math.floor((i / span) * op.ramp.length))];
+          for (let j = 0; j < (horizontal ? op.h : op.w); j++) {
+            grid[horizontal ? op.y + j : op.y + i][horizontal ? op.x + i : op.x + j] = c;
           }
         }
         break;

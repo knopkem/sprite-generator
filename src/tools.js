@@ -28,6 +28,10 @@ Contract (read before drawing):
 - Deterministic ops beat hand-drawing: "outline" wraps the silhouette in an
   outline color; "shift" moves a whole frame (animation bob); mirror: true
   mirrors the left half for symmetric characters.
+- Shading ops carry the math: "litEllipse" paints a lambert-shaded ellipse
+  onto a [light, mid, dark] ramp with ordered dither (one op = a shaded
+  blob/sphere; fractional centers allowed); "rampRect" paints a gradient rect
+  along v/h. Prefer them over hand-placed shading bands.
 - Before declaring a sprite done: get_render with scale 2 and judge whether it
   still reads at game size. If it only looks good big, it isn't done.
 - Leave headroom: characters at ~75-85% of grid height, 2-4px air per side.
@@ -99,6 +103,30 @@ const drawOp = z.discriminatedUnion("type", [
     ry: z.number().int().min(1),
     color: z.number().int().min(0),
     filled: z.boolean().optional().describe("default true; false = 1px ring"),
+  }),
+  z.object({
+    type: z.literal("litEllipse"),
+    cx: z.number().describe("center x — may be fractional (e.g. 15.5 on a 32-wide grid)"),
+    cy: z.number(),
+    rx: z.number().min(1),
+    ry: z.number().min(1),
+    ramp: z
+      .array(z.number().int().min(0))
+      .length(3)
+      .describe("[light, mid, dark] palette indices — use one ramp family from get_palette"),
+    light: z.tuple([z.number(), z.number()]).optional().describe("light direction [x, y], default [-0.6, -0.75] (top-left)"),
+    hi: z.number().optional().describe("light threshold (default 0.42)"),
+    lo: z.number().optional().describe("shadow threshold (default -0.38)"),
+    dither: z.boolean().optional().describe("ordered dither at band boundaries (default true)"),
+  }),
+  z.object({
+    type: z.literal("rampRect"),
+    x: z.number().int(),
+    y: z.number().int(),
+    w: z.number().int().min(1),
+    h: z.number().int().min(1),
+    ramp: z.array(z.number().int().min(0)).min(2).max(8).describe("gradient stops; ramp[0] at top/left"),
+    dir: z.enum(["v", "h"]).optional().describe("gradient direction (default v)"),
   }),
   z.object({
     type: z.literal("block"),
@@ -265,6 +293,8 @@ export function createMcpServer(storage) {
         'rows (full-width RLE, each row must sum to grid width) for whole-sprite fills. ' +
         'Use "pixels" (max 512) for small fixes, "clear" to wipe. ' +
         '"outline" wraps the silhouette in an outline color automatically (draw flat shapes first, outline after). ' +
+        '"litEllipse" shades an ellipse onto a [light, mid, dark] ramp with light direction and dithered bands (one op = a shaded blob). ' +
+        '"rampRect" paints a gradient rect along v/h. ' +
         '"fill" flood-fills a region from a point. ' +
         '"shift" translates the whole grid by dx/dy (animation bob/squash). ' +
         "mirror: true mirrors the left half onto the right AFTER ops run (for symmetric sprites). " +

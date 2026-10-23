@@ -16,6 +16,10 @@ function px(png, x, y) {
 /**
  * Area-average resize. Averaging (not nearest-neighbor) shows how detail
  * actually survives at the target size.
+ * Color channels are alpha-weighted (premultiplied semantics): transparent
+ * pixels' RGB must not darken partially-covered output pixels — otherwise
+ * sprites/references with transparent backgrounds get muddy dark edges.
+ * Alpha itself is averaged straight, so coverage still fades correctly.
  */
 export function resizeAvg(src, tw, th) {
   const out = new PNG({ width: tw, height: th });
@@ -27,17 +31,18 @@ export function resizeAvg(src, tw, th) {
       const x1 = Math.max(x0 + 1, Math.floor((x + 1) * sx));
       const y0 = Math.floor(y * sy);
       const y1 = Math.max(y0 + 1, Math.floor((y + 1) * sy));
-      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      let r = 0, g = 0, b = 0, a = 0, w = 0, n = 0;
       for (let yy = y0; yy < Math.min(y1, src.height); yy++) {
         for (let xx = x0; xx < Math.min(x1, src.width); xx++) {
           const p = px(src, xx, yy);
-          r += p[0]; g += p[1]; b += p[2]; a += p[3]; n++;
+          r += p[0] * p[3]; g += p[1] * p[3]; b += p[2] * p[3];
+          a += p[3]; w += p[3]; n++;
         }
       }
       const i = (y * tw + x) * 4;
-      out.data[i] = Math.round(r / n);
-      out.data[i + 1] = Math.round(g / n);
-      out.data[i + 2] = Math.round(b / n);
+      out.data[i] = w ? Math.round(r / w) : 0;
+      out.data[i + 1] = w ? Math.round(g / w) : 0;
+      out.data[i + 2] = w ? Math.round(b / w) : 0;
       out.data[i + 3] = Math.round(a / n);
     }
   }

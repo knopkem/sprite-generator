@@ -37,8 +37,13 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
    proportions? readable? lopsided? Fix with small patches before proceeding.
    Never claim it looks good without rendering.
 
-5. **Detail passes.** Add shading (ramp neighbors), face, gear — one `draw`
-   call per pass, `get_render` after each. 2-4 detail passes is normal.
+5. **Detail passes.** Add shading, face, gear — one `draw` call per pass,
+   `get_render` after each. 2-4 detail passes is normal. For rounded volumes
+   (blobs, heads, muscles, gems) prefer the `litEllipse` op — lambert shading
+   onto a [light, mid, dark] ramp with dithered bands, one op instead of a
+   hand-placed shading pass; `rampRect` paints gradient bands (ground shadow,
+   sky). Hand-placed shading bands come out with hard edges and are the most
+   common cause of full redraws.
    See `.opencode/skills/sprite-draw/references/worked-example.md` (path from
    the project root) for a complete real session — match that economy of
    tool calls.

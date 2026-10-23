@@ -123,3 +123,40 @@ test("animations: add, target frame, copy", () => {
   assert.throws(() => targetGrid(s, { anim: "nope", index: 0 }), /no animation/);
   assert.throws(() => copyFrame(s, "run", 0, 9), /out of range/);
 });
+
+test("litEllipse shades by light direction, allows fractional centers", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "litEllipse", cx: 7.5, cy: 7.5, rx: 6, ry: 6, ramp: [13, 14, 15] }]);
+  const g = s.grid;
+  assert.equal(g[4][4], 13); // top-left interior = lit (default light is top-left)
+  assert.equal(g[7][7], 14); // center = mid
+  assert.equal(g[11][11], 15); // bottom-right = shadow
+  assert.equal(g[0][0], 0); // outside the ellipse = untouched
+});
+
+test("litEllipse validates ramp colors", () => {
+  const s = createSprite("t", 16, 16);
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "litEllipse", cx: 8, cy: 8, rx: 4, ry: 4, ramp: [1, 2, 99] }]),
+    /out of palette range/
+  );
+});
+
+test("rampRect paints v/h gradients and validates bounds and colors", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "rampRect", x: 2, y: 2, w: 4, h: 4, ramp: [5, 6, 7] }]);
+  const g = s.grid;
+  assert.equal(g[2][2], 5); // top rows map to ramp[0]
+  assert.equal(g[3][2], 5);
+  assert.equal(g[4][2], 6);
+  assert.equal(g[5][2], 7); // bottom row maps to ramp[2]
+
+  applyOps(s, s.grid, [{ type: "rampRect", x: 8, y: 8, w: 4, h: 2, ramp: [1, 2], dir: "h" }]);
+  assert.equal(g[8][8], 1); // left half = ramp[0]
+  assert.equal(g[8][9], 1);
+  assert.equal(g[8][10], 2); // right half = ramp[1]
+  assert.equal(g[9][10], 2); // spans all rows
+
+  assert.throws(() => applyOps(s, s.grid, [{ type: "rampRect", x: 14, y: 0, w: 4, h: 1, ramp: [1, 2] }]), /out of bounds/);
+  assert.throws(() => applyOps(s, s.grid, [{ type: "rampRect", x: 0, y: 0, w: 2, h: 2, ramp: [1, 99] }]), /out of palette range/);
+});

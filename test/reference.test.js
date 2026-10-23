@@ -31,6 +31,14 @@ test("resizeAvg averages 2x2 blocks down to 1", () => {
   assert.deepEqual([one.data[0], one.data[1], one.data[2]], [64, 64, 64]); // round(255/4)
 });
 
+test("resizeAvg alpha-weights color: transparent black cannot darken edges", () => {
+  // one opaque red pixel + three fully transparent pixels -> 1x1
+  const src = makePng(2, 2, (x, y) => (x === 0 && y === 0 ? [255, 0, 0, 255] : [0, 0, 0, 0]));
+  const out = resizeAvg(src, 1, 1);
+  assert.deepEqual([out.data[0], out.data[1], out.data[2]], [255, 0, 0]); // pure red, not [64, 0, 0]
+  assert.equal(out.data[3], 64); // alpha stays coverage-averaged: round(255/4)
+});
+
 test("upscaleNn repeats pixels exactly", () => {
   const src = makePng(2, 2, (x, y) => [x * 100, y * 100, 0, 255]);
   const out = upscaleNn(src, 3);
