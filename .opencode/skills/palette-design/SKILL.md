@@ -9,8 +9,9 @@ Limited palettes are what make pixel art cohesive.
 
 ## Process
 
-1. **Size**: 8-16 colors. Hard max 31 (index 0 is transparent, added
-   automatically).
+1. **Size**: 8-16 colors is a good target. Hard max 31 (index 0 is
+   transparent, added automatically). The built-in ramp palette already has
+   23 opaque colors plus transparent index 0.
 
 2. **Structure by ramps** — each material gets a 2-4 shade ramp:
    - skin (light → shadow)
@@ -35,4 +36,8 @@ add entries if truly needed.
 ## Reference points
 
 - Classic constraints: NES (4 colors/sprite), PICO-8 (16 fixed colors)
-- Good default if user has no preference: keep the built-in 16-color palette.
+- Good default if the user has no preference: keep the built-in ramp palette
+  (23 opaque colors + transparent index 0). `get_palette` reports its
+  `outlineIndex` and only valid 3+ entry `litEllipse` triples.
+- `set_palette` replaces the whole ordered palette; include matching
+  `outlineIndex`/`rampFamilies` when you want generated-style ramp guidance.

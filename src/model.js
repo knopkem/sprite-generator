@@ -73,6 +73,19 @@ export const PALETTE_FAMILIES = [
   "brown dark",
 ];
 
+// Shading families of DEFAULT_PALETTE, in palette-index order. Guidance data
+// for get_palette on legacy/custom sprites too; it never rewrites sprite JSON.
+export const DEFAULT_RAMP_FAMILIES = [
+  { name: "neutral", from: 2, to: 4 },
+  { name: "skin", from: 5, to: 7 },
+  { name: "red", from: 8, to: 10 },
+  { name: "gold", from: 11, to: 12 },
+  { name: "green", from: 13, to: 15 },
+  { name: "blue", from: 16, to: 19 },
+  { name: "purple", from: 20, to: 21 },
+  { name: "brown", from: 22, to: 23 },
+];
+
 export function normalizeHex(hex) {
   const m = /^#?([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$/.exec(hex.trim());
   if (!m) throw new Error(`invalid hex color "${hex}", expected #rrggbb or #rrggbbaa`);
@@ -95,6 +108,7 @@ export function createSprite(name, width, height) {
     width,
     height,
     palette: [...DEFAULT_PALETTE],
+    outlineIndex: 1,
     grid: blankGrid(width, height),
     animations: {},
     version: 1,
@@ -124,6 +138,40 @@ function checkBounds(sprite, x, y) {
   }
 }
 
+function orient(a, b, c) {
+  return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+}
+
+function onSegment(a, b, p) {
+  return (
+    Math.abs(orient(a, b, p)) < 1e-9 &&
+    p[0] >= Math.min(a[0], b[0]) && p[0] <= Math.max(a[0], b[0]) &&
+    p[1] >= Math.min(a[1], b[1]) && p[1] <= Math.max(a[1], b[1])
+  );
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const o1 = orient(a, b, c);
+  const o2 = orient(a, b, d);
+  const o3 = orient(c, d, a);
+  const o4 = orient(c, d, b);
+  if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))) return true;
+  if (onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b)) return true;
+  return false;
+}
+
+/** Even-odd point test at integer sample points, including pixels on an edge. */
+function pointInPolygon(x, y, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i][0], yi = pts[i][1];
+    const xj = pts[j][0], yj = pts[j][1];
+    if (onSegment([xj, yj], [xi, yi], [x, y])) return true;
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
 /**
  * Apply a list of draw ops to a grid. Mutates `grid`.
  * Ops:
@@ -133,6 +181,8 @@ function checkBounds(sprite, x, y) {
  *   { type: "clear", color?: 0 }
  *   { type: "outline", color?: 1, diagonals?, scope?: "all"|"new" }  — "new" only wraps pixels added in this call
  *   { type: "curve", x0, y0, cx, cy, x1, y1, color, thickness? }  — quadratic bezier arc
+ *   { type: "polygon", points: [[x, y], ...], color }  — filled simple polygon (3..16 on-grid vertices)
+ *   { type: "taperedLine", x0, y0, x1, y1, w0, w1, color }  — round-capped capsule with width changing along its length
  *   { type: "litEllipse", cx, cy, rx, ry, ramp: [light, mid, dark], light?: [x, y], hi?, lo?, dither? }
  *   { type: "rampRect", x, y, w, h, ramp: [...], dir?: "v"|"h" }
  */
@@ -191,7 +241,7 @@ export function applyOps(sprite, grid, ops) {
         // wraps pixels that became opaque during THIS draw call — detail
         // passes can grow the shape without re-fattening existing thin
         // elements (bowstrings, weapon edges) with a second outline.
-        const c = op.color ?? 1;
+        const c = op.color ?? sprite.outlineIndex ?? 1;
         checkColor(sprite, c);
         const onlyNew = op.scope === "new";
         const snapshot = grid.map((r) => [...r]);
@@ -289,6 +339,98 @@ export function applyOps(sprite, grid, ops) {
               if (!boundary) continue;
             }
             grid[y][x] = op.color;
+          }
+        }
+        break;
+      }
+      case "taperedLine": {
+        // Round-capped capsule from (x0,y0) to (x1,y1) whose diameter changes
+        // linearly from w0 to w1. Paints when the integer sample point is
+        // within w(t)/2 of the nearest centerline point (projection clamped to
+        // the finite segment), so both ends get round caps.
+        checkColor(sprite, op.color);
+        checkBounds(sprite, op.x0, op.y0);
+        checkBounds(sprite, op.x1, op.y1);
+        for (const [name, value] of [["w0", op.w0], ["w1", op.w1]]) {
+          if (!Number.isInteger(value) || value < 1 || value > 12) {
+            throw new Error(`${where}: ${name} must be an integer 1..12 (got ${value})`);
+          }
+        }
+        const tdx = op.x1 - op.x0;
+        const tdy = op.y1 - op.y0;
+        const len2 = tdx * tdx + tdy * tdy;
+        if (len2 === 0) {
+          throw new Error(`${where}: endpoints are coincident — use "ellipse" for a round stamp`);
+        }
+        const maxR = Math.max(op.w0, op.w1) / 2;
+        const bx0 = Math.max(0, Math.floor(Math.min(op.x0, op.x1) - maxR));
+        const bx1 = Math.min(sprite.width - 1, Math.ceil(Math.max(op.x0, op.x1) + maxR));
+        const by0 = Math.max(0, Math.floor(Math.min(op.y0, op.y1) - maxR));
+        const by1 = Math.min(sprite.height - 1, Math.ceil(Math.max(op.y0, op.y1) + maxR));
+        for (let y = by0; y <= by1; y++) {
+          for (let x = bx0; x <= bx1; x++) {
+            const t = Math.max(0, Math.min(1, ((x - op.x0) * tdx + (y - op.y0) * tdy) / len2));
+            const cx = op.x0 + t * tdx;
+            const cy = op.y0 + t * tdy;
+            const radius = (op.w0 + (op.w1 - op.w0) * t) / 2;
+            const dx = x - cx;
+            const dy = y - cy;
+            if (dx * dx + dy * dy <= radius * radius) grid[y][x] = op.color;
+          }
+        }
+        break;
+      }
+      case "polygon": {
+        // Filled simple polygon, even-odd at integer grid sample points.
+        // Vertices must be on-grid integers so coordinate mistakes fail loudly;
+        // only the raster loop's bounding box is clipped.
+        checkColor(sprite, op.color);
+        const pts = op.points;
+        if (!Array.isArray(pts) || pts.length < 3 || pts.length > 16) {
+          throw new Error(`${where}: polygon needs 3..16 vertices (got ${Array.isArray(pts) ? pts.length : typeof pts})`);
+        }
+        for (const [i, p] of pts.entries()) {
+          if (!Array.isArray(p) || p.length !== 2 || !Number.isInteger(p[0]) || !Number.isInteger(p[1])) {
+            throw new Error(`${where}: vertex ${i} must be an integer [x, y]`);
+          }
+          checkBounds(sprite, p[0], p[1]);
+          const next = pts[(i + 1) % pts.length];
+          if (p[0] === next[0] && p[1] === next[1]) {
+            throw new Error(`${where}: repeated adjacent vertex at index ${i} (vertices ${i} and ${(i + 1) % pts.length})`);
+          }
+        }
+        let twiceArea = 0;
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i];
+          const b = pts[(i + 1) % pts.length];
+          twiceArea += a[0] * b[1] - b[0] * a[1];
+        }
+        if (Math.abs(twiceArea) < 1e-9) throw new Error(`${where}: polygon has zero area`);
+
+        // O(n^2) self-intersection check (n <= 16). Adjacent edges share an
+        // endpoint by design; non-adjacent edges must not touch or cross.
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i];
+          const b = pts[(i + 1) % pts.length];
+          for (let j = i + 1; j < pts.length; j++) {
+            if (j === i + 1 || (i === 0 && j === pts.length - 1)) continue;
+            const c = pts[j];
+            const d = pts[(j + 1) % pts.length];
+            if (segmentsIntersect(a, b, c, d)) {
+              throw new Error(`${where}: self-intersecting polygon (edges ${i} and ${j} cross or touch)`);
+            }
+          }
+        }
+
+        const xs = pts.map((p) => p[0]);
+        const ys = pts.map((p) => p[1]);
+        const minX = Math.max(0, Math.min(...xs));
+        const maxX = Math.min(sprite.width - 1, Math.max(...xs));
+        const minY = Math.max(0, Math.min(...ys));
+        const maxY = Math.min(sprite.height - 1, Math.max(...ys));
+        for (let y = minY; y <= maxY; y++) {
+          for (let x = minX; x <= maxX; x++) {
+            if (pointInPolygon(x, y, pts)) grid[y][x] = op.color;
           }
         }
         break;
@@ -407,6 +549,33 @@ function decodeRowSafe(rle, width, where) {
   } catch (e) {
     throw new Error(`${where}: ${e.message}`);
   }
+}
+
+/**
+ * Stage a draw without touching the sprite: resolve the target, clone its
+ * rows, apply every op and the optional mirror to the clone. Returns the
+ * staged grid plus a commit closure that swaps it into the intended base or
+ * animation frame. commit() does no storage/history/version work — callers
+ * call storage.beginEdit() immediately before it so one undo snapshot covers
+ * the whole draw.
+ *
+ * Until commit() runs, the sprite's grid data is unchanged; a failing op
+ * therefore leaves no hidden partial state anywhere.
+ */
+export function stageDraw(sprite, frame, ops, mirror = false) {
+  const target = targetGrid(sprite, frame); // validate before cloning
+  const stagedGrid = target.map((row) => [...row]);
+  applyOps(sprite, stagedGrid, ops);
+  if (mirror) mirrorHorizontal(sprite, stagedGrid);
+  const commit = () => {
+    if (frame) {
+      const anim = sprite.animations[frame.anim];
+      anim.frames[frame.index] = stagedGrid;
+    } else {
+      sprite.grid = stagedGrid;
+    }
+  };
+  return { grid: stagedGrid, commit };
 }
 
 /** Mirror the left half of the grid onto the right half. */

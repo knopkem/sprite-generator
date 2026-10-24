@@ -8,12 +8,12 @@ MCP-first sprite/animation daemon. One Node process serves the MCP endpoint, a R
 npm install
 npm test                                   # all tests, node:test
 node --test --test-name-pattern="outline" test/model.test.js   # single test
-npm run serve                              # http://localhost:7337, MCP at /mcp
+npm run serve                              # http://127.0.0.1:7337, MCP at /mcp
 npm run serve -- --port=8080 --root=/path/to/project
 ```
 
 - `--root` (or starting cwd) decides where `sprites/`, `exports/`, `reference-images/`, and `project.json` live. `PORT` env also works.
-- Start the daemon before using sprite-studio MCP tools; `opencode.jsonc` points at `http://localhost:7337/mcp`. Run one daemon per project root — sprites are cached in-process.
+- Start the daemon before using sprite-studio MCP tools; `opencode.jsonc` points at `http://127.0.0.1:7337/mcp`. Use the numeric IPv4 loopback in client configs, not `localhost`: the daemon binds `127.0.0.1` only and Bun-based clients (OpenCode) resolve `localhost` to `::1` without falling back, which gives `ECONNREFUSED`. Run one daemon per project root — sprites are cached in-process.
 - There is no lint, typecheck, format, or CI config. Tests are offline-safe (`fetchReference` takes an injected fetch).
 
 ## Architecture
@@ -22,7 +22,10 @@ npm run serve -- --port=8080 --root=/path/to/project
 |---|---|
 | `src/server.js` | HTTP wiring only: `/mcp` (stateless, POST-only), `/api/*`, static `public/`, `/api/events` SSE |
 | `src/tools.js` | MCP tool registration + zod schemas; `drawOpsSchema` is exported and reused by the REST draw route so both paths validate identically |
-| `src/model.js` | Pure sprite/op logic, no I/O. Source of truth for GRID_SIZES, DEFAULT_PALETTE, frame/resize ops |
+| `src/model.js` | Pure sprite/op logic, no I/O. Source of truth for GRID_SIZES, DEFAULT_PALETTE, frame/resize ops, `stageDraw` |
+| `src/draw.js` | Shared storage-aware draw commit: stage -> `beginEdit` -> commit -> `save` (MCP + REST) |
+| `src/palette.js` | Palette organization: ramp families, outline-index and litEllipse-triple suggestions |
+| `src/version.js` | `SERVER_VERSION` (package.json) + `DRAW_SCHEMA_REVISION` |
 | `src/storage.js` | fs persistence, in-memory cache, undo/redo snapshots, change events |
 | `src/render.js` | palette grid -> PNG (pngjs); renders and onion skins |
 | `src/export.js` | PNG sheet + Aseprite-style JSON |
@@ -33,6 +36,7 @@ npm run serve -- --port=8080 --root=/path/to/project
 ## Invariants that break things silently
 
 - Every mutation must call `storage.beginEdit(name)` **before** changing the sprite and `storage.save(sprite)` after. `get()` returns the cached mutable object, and `save()` is what bumps `version`, persists, and emits SSE.
+- MCP and REST draws must go through `drawAndSave()` (`src/draw.js`): `stageDraw()` validates and rasterizes on a clone **before** `beginEdit()`, so a failed multi-op draw leaves grid, file, version, undo/redo, and SSE untouched. Never call `applyOps()` directly from a tool route.
 - A draw op needs both a zod variant in `src/tools.js` and a `switch` case in `model.applyOps`; validation and execution are separate, and the REST route reuses `drawOpsSchema`. Add ops to both plus `SERVER_INSTRUCTIONS` and the README op list.
 - Palette index 0 is always transparent and locked. Grid dimensions must be one of `16/24/32/48/64`. Animations are created with 2–16 frames and capped at 16 (1-frame animations are allowed only by deleting down); fps 1–60. `pixels` ops cap at 512.
 - `rows` ops are full-width RLE and must sum to grid width; `block` rows have independent widths. Don't confuse them.

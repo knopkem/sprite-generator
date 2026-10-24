@@ -7,9 +7,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createMcpServer, drawOpsSchema } from "./tools.js";
+import { createMcpServer, drawOpsSchema, getCapabilities } from "./tools.js";
+import { SERVER_VERSION, DRAW_SCHEMA_REVISION } from "./version.js";
 import { Storage } from "./storage.js";
-import { targetGrid, applyOps, mirrorHorizontal, insertFrame, deleteFrame, moveFrame, setFps, normalizeHex, resizeSprite } from "./model.js";
+import { targetGrid, insertFrame, deleteFrame, moveFrame, setFps, normalizeHex, resizeSprite } from "./model.js";
+import { drawAndSave } from "./draw.js";
 import { renderPng } from "./render.js";
 import { exportSprite } from "./export.js";
 import { generateSprite } from "./generate.js";
@@ -58,6 +60,10 @@ async function handleApi(req, res, url) {
     return json(res, 200, { sprites: names.map((n) => storage.get(n)) });
   }
 
+  if (p === "/api/capabilities" && req.method === "GET") {
+    return json(res, 200, getCapabilities());
+  }
+
   let m = /^\/api\/sprite\/([\w-]+)\/render\.png$/.exec(p);
   if (m && req.method === "GET") {
     try {
@@ -83,13 +89,12 @@ async function handleApi(req, res, url) {
       const body = JSON.parse(await readBody(req));
       const parsed = drawOpsSchema.safeParse(body.ops);
       if (!parsed.success) throw new Error(parsed.error.issues.map((i) => i.message).join("; "));
-      const s = storage.get(m[1]);
-      storage.beginEdit(s.name);
       const frame = body.anim != null ? { anim: body.anim, index: Number(body.frame ?? 0) } : undefined;
-      const grid = targetGrid(s, frame);
-      applyOps(s, grid, parsed.data);
-      if (body.mirror) mirrorHorizontal(s, grid);
-      storage.save(s);
+      const { sprite: s } = drawAndSave(storage, m[1], {
+        frame,
+        ops: parsed.data,
+        mirror: Boolean(body.mirror),
+      });
       return json(res, 200, { ok: true, version: s.version });
     } catch (e) {
       return json(res, 400, { error: e.message });
@@ -115,7 +120,9 @@ async function handleApi(req, res, url) {
       if (!Number.isInteger(idx) || idx < 1 || idx >= s.palette.length) throw new Error("palette index out of range (index 0 is locked to transparent)");
       storage.beginEdit(s.name);
       s.palette[idx] = normalizeHex(String(body.color));
-      delete s.rampFamilies; // a manual palette edit invalidates the generated ramp structure
+      // A manual color edit invalidates shade organization, but the indices
+      // themselves did not move, so outlineIndex stays valid.
+      delete s.rampFamilies;
       storage.save(s);
       return json(res, 200, { ok: true, version: s.version });
     } catch (e) {
@@ -282,8 +289,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`sprite-studio v0.1.0`);
+  console.log(`sprite-studio v${SERVER_VERSION} (draw schema rev ${DRAW_SCHEMA_REVISION})`);
   console.log(`  project root : ${ROOT}`);
-  console.log(`  MCP endpoint : http://localhost:${PORT}/mcp`);
-  console.log(`  viewer       : http://localhost:${PORT}/`);
+  console.log(`  MCP endpoint : http://127.0.0.1:${PORT}/mcp`);
+  console.log(`  viewer       : http://127.0.0.1:${PORT}/`);
 });

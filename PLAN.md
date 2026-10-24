@@ -200,8 +200,10 @@ Phase 1+ — new behavior tests:
   2 ellipse (+ring) → 3 curve → 4 schemas + docs → 5 dogfood.
 - **Dogfood (phase 5):** redraw the archer's bow as ONE fractional `curve`
   (tips (45,10)/(45,42), control ≈ (50.5,26)) replacing the 4 segments;
-  render at scale 2 and compare against `exports/` of the hand-drawn version.
-  Success = visibly smoother arc, no stray nubs.
+  inspect an enlarged render (scale 2) for arc placement, and render at
+  scale 1 for the actual-size readability check; compare against `exports/`
+  of the hand-drawn version. Success = visibly smoother arc at both sizes, no
+  stray nubs.
 - Risks:
   - *Coverage nubs*: single isolated pixels at arc tips. Mitigate by
     threshold 0.5 (no sub-half pixels ever); accept the rest as pixel-art
@@ -224,8 +226,9 @@ Phase 1+ — new behavior tests:
 3. MCP + REST both accept fractional ops (shared `drawOpsSchema` — one
    validation path preserved).
 4. Docs updated: `SERVER_INSTRUCTIONS`, `README.md`, `AGENTS.md` invariants.
-5. Archer bow dogfood: one `curve` op replaces four segments; scale-2 render
-   comparison attached to the closing commit/PR.
+5. Archer bow dogfood: one `curve` op replaces four segments; include a
+   scale-1 actual-size render comparison (plus an enlarged scale-2 view for
+   placement) in the closing commit/PR.
 
 ## 1.9 Explicit non-goals
 

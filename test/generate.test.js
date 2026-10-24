@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runPainter, generateSprite, organizePalette } from "../src/generate.js";
+import { parseColor } from "../src/render.js";
 
 test("generateSprite paints big, downsamples, quantizes into an indexed sprite", () => {
   const { sprite } = generateSprite({
@@ -90,6 +91,56 @@ test("generated palettes are organized into light->dark ramp families", () => {
   assert.equal(sprite.grid[8][6], fams[0].from + 1);
   assert.equal(sprite.grid[8][10], fams[0].from + 2);
   assert.equal(sprite.grid[8][13], fams[1].from); // blue band
+});
+
+test("generated palettes stay valid with a dominant flat color plus accents", () => {
+  const { sprite } = generateSprite({
+    name: "gen-flat",
+    gridSize: 16,
+    scale: 2,
+    colors: 6,
+    code: `
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        px(x, y, [24, 24, 24]);
+      }
+      for (let i = 0; i < 6; i++) {
+        px(i * 5, 2, [255, i * 40, 0]);
+        px(i * 5 + 1, 2, [0, 255, i * 40]);
+      }
+    `,
+  });
+  assert.equal(sprite.palette[0], "#00000000");
+  for (const c of sprite.palette.slice(1)) {
+    assert.match(c, /^#[0-9a-f]{6}$/);
+    assert.ok(parseColor(c), `palette entry ${c} should be an opaque color`);
+  }
+  for (const row of sprite.grid) {
+    for (const idx of row) {
+      assert.ok(idx >= 0 && idx < sprite.palette.length);
+      if (idx !== 0) assert.ok(parseColor(sprite.palette[idx]), `index ${idx} maps to an invalid color`);
+    }
+  }
+});
+
+test("mix interpolates alpha for RGB/RGB, RGB/RGBA, and RGBA/RGB", () => {
+  const { png } = runPainter(
+    `
+    px(0, 0, mix([0, 0, 0], [100, 200, 255], 0.5));            // RGB/RGB -> opaque
+    px(1, 0, mix([0, 0, 0], [100, 200, 255, 100], 0.5));       // RGB/RGBA
+    px(2, 0, mix([0, 0, 0, 100], [100, 200, 255], 0.5));       // RGBA/RGB
+    px(3, 0, mix([10, 20, 30, 40], [110, 120, 130, 200], 0.25));
+    `,
+    4, 1, 1
+  );
+  const at = (i) => [png.data[i * 4], png.data[i * 4 + 1], png.data[i * 4 + 2], png.data[i * 4 + 3]];
+  assert.deepEqual(at(0), [50, 100, 128, 255]);
+  assert.ok(Math.abs(at(1)[3] - 178) <= 1); // (255 + 100) / 2
+  assert.ok(Math.abs(at(2)[3] - 178) <= 1); // (100 + 255) / 2
+  // 40 + (200-40) * 0.25 = 80
+  assert.deepEqual(at(3), [35, 45, 55, 80]);
+  for (let i = 0; i < 4; i++) {
+    for (const v of at(i)) assert.ok(Number.isFinite(v));
+  }
 });
 
 test("organizePalette merges hue wrap-around (reds) and keeps a neutral family", () => {

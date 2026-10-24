@@ -173,6 +173,147 @@ test("animations: add, target frame, copy", () => {
   assert.throws(() => copyFrame(s, "run", 0, 9), /out of range/);
 });
 
+test("polygon matches an equivalent rect for an axis-aligned quadrilateral", () => {
+  const rect = createSprite("rect", 16, 16);
+  applyOps(rect, rect.grid, [{ type: "rect", x: 2, y: 3, w: 6, h: 5, color: 5 }]);
+  const poly = createSprite("poly", 16, 16);
+  applyOps(poly, poly.grid, [{ type: "polygon", points: [[2, 3], [7, 3], [7, 7], [2, 7]], color: 5 }]);
+  assert.deepEqual(poly.grid, rect.grid);
+});
+
+test("polygon fills triangles, concave shapes, and reversed vertex order equally", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "polygon", points: [[2, 2], [8, 2], [5, 7]], color: 6 }]);
+  assert.equal(s.grid[2][5], 6); // top edge
+  assert.equal(s.grid[4][5], 6); // interior
+  assert.equal(s.grid[4][8], 0); // outside the slanted edge
+  assert.equal(s.grid[7][5], 6); // apex-ish bottom edge
+
+  const lShape = [[2, 2], [7, 2], [7, 4], [4, 4], [4, 7], [2, 7]];
+  const a = createSprite("a", 16, 16);
+  applyOps(a, a.grid, [{ type: "polygon", points: lShape, color: 7 }]);
+  assert.equal(a.grid[3][3], 7); // upper bar
+  assert.equal(a.grid[3][6], 7);
+  assert.equal(a.grid[6][3], 7); // lower leg
+  assert.equal(a.grid[6][6], 0); // concave notch stays empty
+
+  const b = createSprite("b", 16, 16);
+  applyOps(b, b.grid, [{ type: "polygon", points: [...lShape].reverse(), color: 7 }]);
+  assert.deepEqual(b.grid, a.grid);
+});
+
+test("polygon includes boundary pixels and clips its raster loop at grid edges", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "polygon", points: [[0, 0], [15, 0], [15, 15], [0, 15]], color: 4 }]);
+  for (let y = 0; y < 16; y++) {
+    for (let x = 0; x < 16; x++) assert.equal(s.grid[y][x], 4);
+  }
+});
+
+test("polygon rejects invalid, repeated, zero-area, and self-crossing vertices", () => {
+  const s = createSprite("t", 16, 16);
+  assert.throws(() => applyOps(s, s.grid, [{ type: "polygon", points: [[1, 1], [5, 5]], color: 1 }]), /3\.\.16/);
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "polygon", points: [[1, 1], [16, 1], [1, 5]], color: 1 }]),
+    /out of bounds/
+  );
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "polygon", points: [[1, 1], [1, 1], [5, 5]], color: 1 }]),
+    /repeated adjacent/
+  );
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "polygon", points: [[1, 1], [4, 1], [7, 1]], color: 1 }]),
+    /zero area/
+  );
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "polygon", points: [[2, 2], [10, 8], [2, 8], [6, 2]], color: 1 }]),
+    /self-intersecting/
+  );
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "polygon", points: [[1.5, 1], [4, 1], [4, 4]], color: 1 }]),
+    /integer/
+  );
+});
+
+test("taperedLine draws round-capped wide-to-narrow and narrow-to-wide strokes", () => {
+  const a = createSprite("a", 16, 16);
+  applyOps(a, a.grid, [
+    { type: "taperedLine", x0: 2, y0: 8, x1: 12, y1: 8, w0: 8, w1: 2, color: 5 },
+  ]);
+  // wide start: radius 4 -> y 4..12 at x=2
+  assert.equal(a.grid[4][2], 5);
+  assert.equal(a.grid[12][2], 5);
+  assert.equal(a.grid[3][2], 0);
+  // narrow end: radius 1 -> y 7..9 at x=12
+  assert.equal(a.grid[7][12], 5);
+  assert.equal(a.grid[9][12], 5);
+  assert.equal(a.grid[6][12], 0);
+  // midpoint radius 2.5 -> y 6..10
+  assert.equal(a.grid[6][7], 5);
+  assert.equal(a.grid[10][7], 5);
+  assert.equal(a.grid[5][7], 0);
+  // round caps extend past the endpoints by their radius
+  assert.equal(a.grid[8][13], 5);
+  assert.equal(a.grid[8][14], 0);
+  assert.equal(a.grid[8][1], 5);
+
+  // reversed endpoints with swapped widths is the same capsule
+  const b = createSprite("b", 16, 16);
+  applyOps(b, b.grid, [
+    { type: "taperedLine", x0: 12, y0: 8, x1: 2, y1: 8, w0: 2, w1: 8, color: 5 },
+  ]);
+  assert.deepEqual(b.grid, a.grid);
+});
+
+test("taperedLine handles diagonals, clipping, and anatomy-sized widths", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [
+    { type: "taperedLine", x0: 2, y0: 2, x1: 12, y1: 10, w0: 1, w1: 1, color: 3 },
+  ]);
+  assert.equal(s.grid[2][2], 3);
+  assert.equal(s.grid[10][12], 3);
+  assert.equal(s.grid[6][7], 3); // exact centerline midpoint
+
+  // clipping at the top edge does not throw and drops off-grid pixels
+  applyOps(s, s.grid, [
+    { type: "taperedLine", x0: 2, y0: 0, x1: 12, y1: 0, w0: 12, w1: 12, color: 4 },
+  ]);
+  assert.equal(s.grid[0][7], 4);
+
+  // thigh -> calf is visibly wider than a thickness-4 line
+  const leg = createSprite("leg", 16, 16);
+  applyOps(leg, leg.grid, [
+    { type: "taperedLine", x0: 8, y0: 2, x1: 8, y1: 13, w0: 12, w1: 4, color: 6 },
+  ]);
+  const row3 = leg.grid[3].filter((v) => v === 6).length;
+  assert.ok(row3 >= 8, `thigh row width ${row3} should be wide`);
+  const line = createSprite("line", 16, 16);
+  applyOps(line, line.grid, [
+    { type: "line", x0: 8, y0: 2, x1: 8, y1: 13, color: 6, thickness: 4 },
+  ]);
+  assert.ok(row3 > line.grid[3].filter((v) => v === 6).length);
+});
+
+test("taperedLine validates endpoints and widths", () => {
+  const s = createSprite("t", 16, 16);
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "taperedLine", x0: 4, y0: 4, x1: 4, y1: 4, w0: 4, w1: 4, color: 1 }]),
+    /ellipse/
+  );
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "taperedLine", x0: 0, y0: 0, x1: 16, y1: 4, w0: 4, w1: 4, color: 1 }]),
+    /out of bounds/
+  );
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "taperedLine", x0: 0, y0: 0, x1: 4, y1: 4, w0: 0, w1: 4, color: 1 }]),
+    /w0/
+  );
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "taperedLine", x0: 0, y0: 0, x1: 4, y1: 4, w0: 4, w1: 13, color: 1 }]),
+    /w1/
+  );
+});
+
 test("litEllipse shades by light direction, allows fractional centers", () => {
   const s = createSprite("t", 16, 16);
   applyOps(s, s.grid, [{ type: "litEllipse", cx: 7.5, cy: 7.5, rx: 6, ry: 6, ramp: [13, 14, 15] }]);

@@ -4,7 +4,10 @@
     "servers": {
       "sprite-studio": {
         "type": "remote",
-        "url": "http://localhost:7337/mcp",
+        // Use the numeric IPv4 loopback: the daemon binds 127.0.0.1 only, and
+        // Bun-based clients (OpenCode) resolve "localhost" to ::1 without
+        // falling back, which yields ECONNREFUSED.
+        "url": "http://127.0.0.1:7337/mcp",
         "oauth": false,
         // codemode disabled so image tool results (renders) reach the model
         // directly. Re-enable if your harness handles images under Code Mode.

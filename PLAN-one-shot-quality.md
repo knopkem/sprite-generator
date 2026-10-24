@@ -1,6 +1,7 @@
 # Plan: One-shot character quality and tooling reliability
 
-Status: **planned, not started** · Written 2026-10-24  
+Status: **Implemented and dogfooded 2026-10-24**
+
 Audience: a worker LLM implementing the changes without further architectural direction.
 
 This plan follows the second 64px side-view archer dogfood. The sprite was
@@ -805,19 +806,56 @@ unit/MCP tests are the correctness gate; this review is the quality gate.
 
 ### 7.3 Final acceptance checklist
 
-- [ ] All previous phase acceptance criteria are met and `npm test` is green.
-- [ ] The reference regression returns a full valid palette rather than the old
+- [x] All previous phase acceptance criteria are met and `npm test` is green
+      (81 tests).
+- [x] The reference regression returns a full valid palette rather than the old
       four-color early stop under equivalent conditions.
-- [ ] MCP `tools/list` exposes every implemented op and reports the new schema
-      revision in a fresh session.
-- [ ] Failed multi-op draws leave no hidden state changes.
-- [ ] Instructions consistently require actual-size review and a silhouette
+- [x] MCP `tools/list` exposes every implemented op and reports the new schema
+      revision in a fresh session (live `get_capabilities`: 0.2.0 / rev 2).
+- [x] Failed multi-op draws leave no hidden state changes.
+- [x] Instructions consistently require actual-size review and a silhouette
       quality gate.
-- [ ] The one-shot archer is evaluated without manual repair and the two
+- [x] The one-shot archer is evaluated without manual repair and the two
       observed quality defects are specifically reviewed.
-- [ ] At least one non-archer prompt is checked to reduce prompt-specific
-      overfitting.
-- [ ] No generated runtime files are committed.
+- [x] At least one non-archer prompt is checked to reduce prompt-specific
+      overfitting (32px knight with sword and shield).
+- [x] No generated runtime files are committed.
+
+### 7.4 Dogfood log (2026-10-24)
+
+**Fresh-session required run** — exact prompt
+`@sprite-draw an archer with a bow in side view 64px`, new MCP child session,
+server 0.2.0 / schema rev 2:
+
+- sprite `archer_side64`, version 9
+- reference: `https://opengameart.org/sites/default/files/archer.png`
+  (CC0, LordNeo, 64x64); `fetch_reference` extracted 12 colors and suggested
+  a 12-color palette in 2 ramp families (neutral 1-4, orange 5-12,
+  outlineIndex 4); the agent kept the default palette instead
+- 7 draw calls (initial + 4 silhouette/pose rebuilds + 2 detail/fix passes),
+  no tool errors, two `scale: 1` checks
+- scores: pose 2, proportions 1, legs/feet 2, arm/equipment separation 1,
+  bow/string/arrow 2, palette contrast 2
+- regression checks: quiver reads as back equipment and is not the drawing
+  arm; legs are not thin sticks; the bow is one `curve` op; no unavailable op
+- remaining defect: the drawing arm's brown bracer crowds the quiver/belt at
+  actual size, and the bow fist swallows the grip
+
+**Implementation-session smoke runs** (same server, not a fresh context):
+
+- `archer_oneshot` 64x64, 3 draw passes, no reference, no errors, scale 1
+  reviewed. Pose 2, proportions 1, legs/feet 2, separation 2, bow/arrow 2,
+  contrast 2; quiver and legs pass the regression check.
+- `knight_oneshot` 32x32, 3 draw passes (one silhouette redraw after the first
+  pass merged the feet and buried a leg behind the shield), no errors, scale 1
+  reviewed. Pose 2, proportions 1, legs/feet 1, equipment separation 1,
+  sword/shield clarity 2, contrast 2. The sword hand/crossguard still crowds
+  the shield rim.
+- One duplicate same-scale render was used on the knight with `grid: true` to
+  diagnose the leg gap; it was a diagnostic view, not a blind repeat.
+
+Generated sprites live in the gitignored `sprites/` directory and are not part
+of this change set.
 
 ---
 

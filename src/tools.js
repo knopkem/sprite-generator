@@ -4,11 +4,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { encodeGrid } from "./rle.js";
-import { applyOps, targetGrid, mirrorHorizontal, addAnimation, copyFrame, normalizeHex, resizeSprite, contentBounds, GRID_SIZES, DEFAULT_PALETTE, PALETTE_FAMILIES } from "./model.js";
+import { targetGrid, addAnimation, copyFrame, normalizeHex, resizeSprite, contentBounds, GRID_SIZES, DEFAULT_PALETTE, PALETTE_FAMILIES, DEFAULT_RAMP_FAMILIES } from "./model.js";
+import { drawAndSave } from "./draw.js";
+import { SERVER_VERSION, DRAW_SCHEMA_REVISION } from "./version.js";
 import { renderPng, renderOnionSkin } from "./render.js";
 import { exportSprite } from "./export.js";
 import { generateSprite } from "./generate.js";
-import { resizeAvg, upscaleNn, extractPalette, fetchReference } from "./reference.js";
+import { prepareReference, fetchReference } from "./reference.js";
+import { rampTripleSuggestions } from "./palette.js";
 import { PNG } from "pngjs";
 import fs from "node:fs";
 
@@ -18,36 +21,61 @@ Contract (read before drawing):
 - Grids are ${GRID_SIZES.join("/")} px. Default 32. Above 32 quality degrades — warn the user.
 - Palette index 0 is ALWAYS transparent. Reference colors by index only.
 - Draw in BULK with shape ops, not scanline math: ellipse for heads/round
-  shapes, line for limbs/props, curve for arcs (quadratic bezier: a bow is
-  ONE curve op, not hand-chained segments), rect for blocks, block for small
-  local RLE regions (rows have independent widths), rows (full-width RLE, must sum to
-  grid width) only for whole-sprite fills. Never hundreds of single pixels.
-- Workflow: set_palette (optional) -> draw silhouette -> critique the render
-  honestly (draw returns it inline; pass render: false to skip) -> fix with
-  small draw patches -> repeat until good. undo/redo recover a bad pass
-  without redrawing.
-- ALWAYS look at the render after each drawing pass. Never claim success without looking.
-- The default palette is ramp-based: each hue family has light/mid/dark as
-  adjacent indices. Shade with the darker ramp neighbor, highlight with the lighter.
-- Deterministic ops beat hand-drawing: "outline" wraps the silhouette in an
-  outline color (after the base pass use scope: "new" so only pixels added in
-  that call get outlined — thin details like bowstrings stay thin); "shift"
-  moves a whole frame (animation bob); mirror: true mirrors the left half for
-  symmetric characters.
+  shapes; line for straight limbs/props; curve for arcs (quadratic bezier: a
+  bow is ONE curve op, not hand-chained segments); polygon for angular
+  silhouettes (tunics, boots, quivers, shields); taperedLine for anatomy that
+  changes width (thigh->calf, upper arm->forearm, tapered props); rect for
+  blocks; block for small local RLE regions (rows have independent widths);
+  rows (full-width RLE, must sum to grid width) only for whole-sprite fills.
+  Never hundreds of single pixels.
+- Workflow: set_palette (optional) -> draw silhouette -> pass the silhouette
+  gate below -> detail passes -> actual-size review. undo/redo recover a bad
+  pass without redrawing.
+- Silhouette gate (mandatory BEFORE any facial detail or shading):
+  * subject and side-view/front-view pose read without face or shading;
+  * head/torso/leg proportions are intentional;
+  * thighs, calves, ankles, and feet have distinct, readable widths;
+  * feet are grounded and broader than ankles where appropriate;
+  * bent arms leave visible negative space instead of reading as straight bars;
+  * back equipment (quiver, pack, cape) does not merge with elbows, arms, or
+    torso;
+  * touching parts differ in value/hue, or keep 1-2px of separation when the
+    design allows it;
+  * weapons and extremities preserve animation headroom.
+  If an item fails, patch the silhouette. Do NOT use shading to conceal an
+  anatomy or overlap problem.
+- Build back-to-front: rear props, body, costume, arms, then held props.
+- Drawing loop: draw returns an inline render by default; critique THAT image
+  instead of requesting the same render again. Use get_render when changing
+  scale/grid/target or when inline rendering was skipped. Inspect an enlarged
+  render (scale 2-4) for pixel placement. BEFORE completion inspect scale: 1
+  for actual-size readability; an extra scale: 2 view is allowed but is NOT
+  the actual-size test. Never claim success without looking.
+- The default palette has ${DEFAULT_PALETTE.length - 1} opaque colors plus
+  transparent index 0. It is ramp-based: each hue family has light/mid/dark as
+  adjacent indices. Shade with the darker ramp neighbor, highlight with the
+  lighter. Distinct props should use DIFFERENT families — same-hue adjacent
+  elements read as one blob.
+- Deterministic ops beat hand-drawing: "outline" wraps the silhouette in the
+  sprite's outlineIndex (after the base pass use scope: "new" so only pixels
+  added in that call get outlined — thin details like bowstrings stay thin);
+  "shift" moves a whole frame (animation bob); mirror: true mirrors the left
+  half for symmetric characters.
 - Shading ops carry the math: "litEllipse" paints a lambert-shaded ellipse
   onto a [light, mid, dark] ramp with ordered dither (one op = a shaded
-  blob/sphere; fractional centers allowed); "rampRect" paints a gradient rect
-  along v/h. Prefer them over hand-placed shading bands.
+  blob/sphere; fractional centers allowed; only a 3+ color family is a valid
+  ramp); "rampRect" paints a gradient rect along v/h. Prefer them over
+  hand-placed shading bands.
 - "generate_sprite" = procedural path: your sandboxed JS paints a big canvas
   (gridSize x scale; API: px/over/mix/clamp01/smooth/rng/log), then the server
-  downsamples and quantizes it into an indexed sprite. Best for organic,
-  gradient-heavy art (foliage, rock, slimes, fur) or grids >= 48. Write math
-  (loops, lambert, noise), never per-pixel lists. Iterate via overwrite: true.
-  The generated palette is auto-organized into light->dark ramp families
-  (reported in the result and by get_palette), so litEllipse/rampRect compose
-  on generated sprites.
-- Before declaring a sprite done: get_render with scale 2 and judge whether it
-  still reads at game size. If it only looks good big, it isn't done.
+  downsamples and quantizes it into an indexed sprite. Consider it for organic,
+  gradient-heavy art (foliage, rock, slimes, fur) and grids >= 48 — not as an
+  automatic choice for every large character. Direct shape ops remain the right
+  tool for crisp, hard-edged character silhouettes. Write math (loops, lambert,
+  noise), never per-pixel lists. Iterate via overwrite: true. The generated
+  palette is auto-organized into light->dark ramp families (reported in the
+  result and by get_palette), so litEllipse/rampRect compose on generated
+  sprites.
 - Leave headroom: characters at ~75-85% of grid height, 2-4px air per side.
   Animations need it. If an existing sprite is too tight, resize_sprite grows
   the grid without redrawing (content stays bottom-centered).
@@ -55,6 +83,10 @@ Contract (read before drawing):
   grid unless the user asks for a redo.
 - Animation: add_animation -> copy_frame from a neighbor -> patch the pose ->
   get_onion_skin to check motion -> fix per frame. Never regenerate all frames.
+- If a tool or draw op seems missing, call get_capabilities. After changing tool
+  code/schemas, restart the daemon and reconnect the MCP client (or start a
+  fresh agent session); a fresh transport per request does NOT hot-reload
+  source modules, and clients can cache old schemas.
 - export writes PNG sheet + JSON into the project's exports/ directory.`;
 
 const frameRef = z
@@ -125,6 +157,25 @@ const drawOp = z.discriminatedUnion("type", [
     thickness: z.number().int().min(1).max(4).optional(),
   }),
   z.object({
+    type: z.literal("polygon"),
+    points: z
+      .array(z.tuple([z.number().int(), z.number().int()]))
+      .min(3)
+      .max(16)
+      .describe("3..16 on-grid integer vertices; clockwise or counterclockwise; concave allowed"),
+    color: z.number().int().min(0),
+  }),
+  z.object({
+    type: z.literal("taperedLine"),
+    x0: z.number().int().describe("start x (on-grid)"),
+    y0: z.number().int().describe("start y (on-grid)"),
+    x1: z.number().int().describe("end x (on-grid)"),
+    y1: z.number().int().describe("end y (on-grid)"),
+    w0: z.number().int().min(1).max(12).describe("diameter at the start (1..12)"),
+    w1: z.number().int().min(1).max(12).describe("diameter at the end (1..12)"),
+    color: z.number().int().min(0),
+  }),
+  z.object({
     type: z.literal("ellipse"),
     cx: z.number().int(),
     cy: z.number().int(),
@@ -173,6 +224,80 @@ const drawOp = z.discriminatedUnion("type", [
 /** Reused by the REST API so human and agent edits share one validation path. */
 export const drawOpsSchema = z.array(drawOp).min(1).max(50);
 
+/** Every draw op the running server supports, derived from the zod union. */
+export const DRAW_OP_TYPES = Object.freeze(drawOp.options.map((option) => option.shape.type.value));
+
+/**
+ * Machine-readable identity/capability block. Exposed as the MCP
+ * get_capabilities tool and GET /api/capabilities so a stale client can be
+ * diagnosed: creating a transport per request does not reload source modules.
+ */
+export function getCapabilities() {
+  return {
+    serverVersion: SERVER_VERSION,
+    drawSchemaRevision: DRAW_SCHEMA_REVISION,
+    drawOps: [...DRAW_OP_TYPES],
+    gridSizes: [...GRID_SIZES],
+    features: {
+      transactionalDraw: true,
+      inlineDrawRender: true,
+      generateSprite: true,
+    },
+  };
+}
+
+const PROP_CONTRAST_REMINDER =
+  "Distinct props (bow, quiver, clothing) should use DIFFERENT families — same-hue adjacent elements read as one blob.";
+
+/**
+ * Human-readable ramp guidance from family metadata. Only families with at
+ * least three entries get litEllipse triples; shorter families are explicitly
+ * described as manual-shading-only instead of being mis-sold as ramps.
+ */
+function rampGuidance(families) {
+  if (!families?.length) return "";
+  const labels = [];
+  const triples = [];
+  const manual = [];
+  for (const f of families) {
+    const range = `${f.from}${f.to > f.from ? `-${f.to}` : ""}`;
+    labels.push(`${f.name} ${range}`);
+    const t = rampTripleSuggestions(f);
+    if (t.length) triples.push(`${f.name}: ${t.map((x) => `[${x.join(",")}]`).join(" ")}`);
+    else manual.push(`${f.name} ${range}`);
+  }
+  let out = `Ramp families (light→dark): ${labels.join(", ")}.`;
+  if (triples.length) out += ` litEllipse triples: ${triples.join("; ")}.`;
+  if (manual.length) out += ` Manual light/dark shading only (no three-stop litEllipse ramp): ${manual.join(", ")}.`;
+  return out;
+}
+
+/** Validate custom ramp metadata before any mutation. */
+function normalizeRampFamilies(families, paletteLength) {
+  const normalized = families.map((f) => {
+    const name = String(f.name).trim();
+    if (!name) throw new Error("rampFamilies: every family needs a nonempty name");
+    if (!Number.isInteger(f.from) || !Number.isInteger(f.to)) {
+      throw new Error(`rampFamilies "${name}": from/to must be integers`);
+    }
+    if (f.from < 1 || f.to < f.from || f.to >= paletteLength) {
+      throw new Error(
+        `rampFamilies "${name}": require 1 <= from <= to < ${paletteLength} (final palette indices, index 0 is transparent); got ${f.from}..${f.to}`
+      );
+    }
+    return { name, from: f.from, to: f.to };
+  });
+  const sorted = [...normalized].sort((a, b) => a.from - b.from);
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].from <= sorted[i - 1].to) {
+      throw new Error(
+        `rampFamilies overlap: "${sorted[i - 1].name}" (${sorted[i - 1].from}-${sorted[i - 1].to}) and "${sorted[i].name}" (${sorted[i].from}-${sorted[i].to}) share an index`
+      );
+    }
+  }
+  return normalized;
+}
+
 function text(s) {
   return { content: [{ type: "text", text: s }] };
 }
@@ -215,14 +340,25 @@ const safe = (fn) => async (args) => {
 
 export function createMcpServer(storage) {
   const server = new McpServer(
-    { name: "sprite-studio", version: "0.1.0" },
+    { name: "sprite-studio", version: SERVER_VERSION },
     { instructions: SERVER_INSTRUCTIONS }
+  );
+
+  server.registerTool(
+    "get_capabilities",
+    {
+      description:
+        "Report the running server version, draw-schema revision, supported draw ops, grid sizes, and feature flags. " +
+        "Call this when a tool or draw op seems missing: if this list differs from the tools you were given, restart the daemon and reconnect the MCP session.",
+      inputSchema: {},
+    },
+    safe(() => text(JSON.stringify(getCapabilities(), null, 2)))
   );
 
   server.registerTool(
     "create_sprite",
     {
-      description: `Create a new sprite. Grid size must be one of ${GRID_SIZES.join("/")} (default recommendation: 32; above 32 warn the user about quality). Comes with a default 16-color palette (index 0 = transparent).`,
+      description: `Create a new sprite. Grid size must be one of ${GRID_SIZES.join("/")} (default recommendation: 32; above 32 warn the user about quality). Comes with the default ramp palette: ${DEFAULT_PALETTE.length - 1} opaque colors plus transparent index 0, and outlineIndex 1.`,
       inputSchema: {
         name: z.string().describe("letters, digits, - and _"),
         width: z.number().int(),
@@ -232,7 +368,7 @@ export function createMcpServer(storage) {
     safe(({ name, width, height }) => {
       const s = storage.create(name, width, height);
       const warn = width > 32 || height > 32 ? " WARNING: grids above 32 degrade LLM spatial coherence — expect to need more fix passes." : "";
-      return text(`Created "${name}" (${width}x${height}), palette indices 0..${s.palette.length - 1} (0 = transparent).${warn} Draw the character at ~75-85% of grid height, bottom-centered, with 2-4px of air on every side — animations need that headroom. Next: draw the silhouette with a "rows" op, then get_render to look at it.`);
+      return text(`Created "${name}" (${width}x${height}), palette indices 0..${s.palette.length - 1} (0 = transparent, ${s.palette.length - 1} opaque colors).${warn} Draw the character at ~75-85% of grid height, bottom-centered, with 2-4px of air on every side — animations need that headroom. Next: draw the silhouette with shape ops (ellipse, line, curve, polygon, taperedLine, rect, block) — not a full-sprite "rows" scanline fill — then check the silhouette gate before adding detail. draw returns the render inline.`);
     })
   );
 
@@ -248,7 +384,7 @@ export function createMcpServer(storage) {
   server.registerTool(
     "get_state",
     {
-      description: "Get sprite metadata: size, palette, animations (names, fps, frame counts), version.",
+      description: "Get sprite metadata: size, palette, outlineIndex, animations (names, fps, frame counts), version.",
       inputSchema: { sprite: z.string() },
     },
     safe(({ sprite }) => {
@@ -259,6 +395,7 @@ export function createMcpServer(storage) {
           width: s.width,
           height: s.height,
           palette: s.palette,
+          outlineIndex: s.outlineIndex ?? 1,
           animations: Object.fromEntries(
             Object.entries(s.animations).map(([k, a]) => [k, { fps: a.fps, frames: a.frames.length }])
           ),
@@ -271,51 +408,78 @@ export function createMcpServer(storage) {
   server.registerTool(
     "set_palette",
     {
-      description: `Replace the sprite palette. Array of #rrggbb hex colors, max 32. Index 0 is forced to transparent. Current default: ${DEFAULT_PALETTE.slice(1).join(" ")}`,
+      description:
+        "Replace the ENTIRE ordered palette (not a single entry). Array of #rrggbb hex colors, max 31; transparent index 0 is prepended automatically. " +
+        "Existing pixels are clamped into the new range. Omitting rampFamilies deletes previous generated/reference ramp metadata. " +
+        "For a one-color change, read the complete palette with get_palette, keep its order/length, and change only that hex (or use the viewer's per-index editor). " +
+        `Current default: ${DEFAULT_PALETTE.length - 1} opaque colors — ${DEFAULT_PALETTE.slice(1).join(" ")}`,
       inputSchema: {
         sprite: z.string(),
-        colors: z.array(z.string()).min(1).max(31).describe("hex colors; transparent index 0 is added automatically"),
+        colors: z.array(z.string()).min(1).max(31).describe("complete ordered hex palette; transparent index 0 is added automatically"),
+        outlineIndex: z
+          .number()
+          .int()
+          .optional()
+          .describe("default outline palette index (includes transparent 0); omit for 1"),
+        rampFamilies: z
+          .array(
+            z.object({
+              name: z.string(),
+              from: z.number().int(),
+              to: z.number().int(),
+            })
+          )
+          .optional()
+          .describe("light→dark shade families using FINAL palette indices (index 0 = transparent); omit to clear old metadata"),
       },
     },
-    safe(({ sprite, colors }) => {
+    safe(({ sprite, colors, outlineIndex, rampFamilies }) => {
       const s = storage.get(sprite);
+      // Validate everything before beginEdit(): a rejected palette must not
+      // touch pixels, history, version, or SSE.
+      const palette = ["#00000000", ...colors.map(normalizeHex)];
+      const finalOutline = outlineIndex ?? 1;
+      if (!Number.isInteger(finalOutline) || finalOutline < 1 || finalOutline >= palette.length) {
+        throw new Error(`outlineIndex must be an integer 1..${palette.length - 1} (index 0 is transparent); got ${finalOutline}`);
+      }
+      const families = rampFamilies ? normalizeRampFamilies(rampFamilies, palette.length) : null;
+
       storage.beginEdit(sprite);
-      s.palette = ["#00000000", ...colors.map(normalizeHex)];
-      delete s.rampFamilies; // a user-set palette invalidates the generated ramp structure
+      s.palette = palette;
+      s.outlineIndex = finalOutline;
+      if (families?.length) s.rampFamilies = families;
+      else delete s.rampFamilies;
       // clamp existing grid indices into the new palette
       const max = s.palette.length - 1;
       for (const grid of [s.grid, ...Object.values(s.animations).flatMap((a) => a.frames)]) {
         for (const row of grid) for (let i = 0; i < row.length; i++) row[i] = Math.min(row[i], max);
       }
       storage.save(s);
-      return text(`Palette set: ${s.palette.length} colors (index 0 = transparent). Existing pixels clamped to new range.`);
+      const extra = families?.length ? ` Ramp families: ${rampGuidance(families)}` : "";
+      return text(`Palette set: ${s.palette.length} colors (index 0 = transparent, outline ${finalOutline}). Existing pixels clamped to new range.${extra}`);
     })
   );
 
   server.registerTool(
     "get_palette",
-    { description: "Get the sprite palette as an indexed list. On the default palette, entries are annotated with their ramp family.", inputSchema: { sprite: z.string() } },
+    {
+      description:
+        "Get the sprite palette as an indexed list, with its default outline index and ramp-family/litEllipse guidance. " +
+        "get_palette is the index-specific drawing reference; call it after set_palette.",
+      inputSchema: { sprite: z.string() },
+    },
     safe(({ sprite }) => {
       const s = storage.get(sprite);
       const isDefault =
         s.palette.length === DEFAULT_PALETTE.length && s.palette.every((c, i) => c === DEFAULT_PALETTE[i]);
-      const lines = s.palette.map((c, i) => {
+      const lines = [`outlineIndex: ${s.outlineIndex ?? 1} (outline ops default to this index; an explicit color op still wins)`];
+      for (const [i, c] of s.palette.entries()) {
         const label = i === 0 ? "transparent" : isDefault ? PALETTE_FAMILIES[i] : null;
-        return `${i}: ${c}${label ? ` (${label})` : ""}`;
-      });
-      if (isDefault) {
-        lines.push(
-          "Ramp families: shading = neighbor index within a family (e.g. green 13 light / 14 mid / 15 dark). " +
-            "Distinct props (bow, quiver, clothing) should use DIFFERENT families — same-hue adjacent elements read as one blob."
-        );
+        lines.push(`${i}: ${c}${label ? ` (${label})` : ""}`);
       }
-      if (s.rampFamilies?.length) {
-        lines.push(
-          "Generated ramps (light→dark): " +
-            s.rampFamilies.map((f) => `${f.name} ${f.from}${f.to > f.from ? `-${f.to}` : ""}`).join(", ") +
-            " — use ramp: [i, i+1, i+2] within a family for litEllipse."
-        );
-      }
+      const families = isDefault ? DEFAULT_RAMP_FAMILIES : s.rampFamilies;
+      if (families?.length) lines.push(rampGuidance(families));
+      lines.push(PROP_CONTRAST_REMINDER);
       return text(lines.join("\n"));
     })
   );
@@ -324,20 +488,22 @@ export function createMcpServer(storage) {
     "draw",
     {
       description:
-        "Apply bulk draw ops to the base sprite or one animation frame. Ops run in order. " +
-        "Think in shapes, not scanlines: ellipse for heads/round shapes, line for limbs/props/arcs, " +
-        "rect for blocks, block for a small local RLE region (rows have independent widths), " +
+        "Apply bulk draw ops to the base sprite or one animation frame. Ops run in order and the whole call is atomic: if any op fails, nothing is committed. " +
+        "Think in shapes, not scanlines: ellipse for heads/round shapes; line for straight limbs/props; " +
+        'curve for arcs (one quadratic bezier: a bow is ONE curve, not chained line segments); ' +
+        "polygon for angular silhouettes (tunics, boots, quivers, shields); taperedLine for limbs/props that change width (thigh->calf, upper arm->forearm); " +
+        "rect for blocks; block for a small local RLE region (rows have independent widths); " +
         'rows (full-width RLE, each row must sum to grid width) for whole-sprite fills. ' +
         'Use "pixels" (max 512) for small fixes, "clear" to wipe. ' +
-        '"outline" wraps the silhouette in an outline color automatically (draw flat shapes first, outline after; scope: "new" re-outlines only pixels added in that call). ' +
-        '"curve" paints a quadratic bezier arc (x0,y0 -> cx,cy -> x1,y1) — one op for bows, capes, tails, no hand-chained segments. ' +
+        '"outline" wraps the silhouette in the sprite outlineIndex automatically (draw flat shapes first, outline after; scope: "new" re-outlines only pixels added in that call; an explicit color overrides the default). ' +
         '"litEllipse" shades an ellipse onto a [light, mid, dark] ramp with light direction and dithered bands (one op = a shaded blob). ' +
         '"rampRect" paints a gradient rect along v/h. ' +
         '"fill" flood-fills a region from a point. ' +
         '"shift" translates the whole grid by dx/dy (animation bob/squash). ' +
         "mirror: true mirrors the left half onto the right AFTER ops run (for symmetric sprites). " +
         "Palette ramps: shading = pick the neighbor index within a ramp family (see get_palette). " +
-        "The result includes a render of the outcome (pass render: false to skip, e.g. batch animation patching) — critique it before the next pass.",
+        "The result includes an inline render by default (pass render: false to skip) — critique that image instead of asking for the same render again. " +
+        "Use get_render when changing scale/grid/target; inspect scale: 1 before declaring the sprite done.",
       inputSchema: {
         sprite: z.string(),
         ops: z.array(drawOp).min(1).max(50),
@@ -349,12 +515,7 @@ export function createMcpServer(storage) {
       },
     },
     safe(({ sprite, ops, frame, mirror, render, scale, grid: showGrid }) => {
-      const s = storage.get(sprite);
-      storage.beginEdit(sprite);
-      const grid = targetGrid(s, frame);
-      applyOps(s, grid, ops);
-      if (mirror) mirrorHorizontal(s, grid);
-      storage.save(s);
+      const { sprite: s, grid } = drawAndSave(storage, sprite, { frame, ops, mirror });
       const target = frame ? `frame ${frame.index} of "${frame.anim}"` : "base sprite";
       const msg = `Applied ${ops.length} op(s) to ${target}${mirror ? " (mirrored)" : ""}.${frame ? "" : headroomNote(s)}`;
       if (render === false) return text(`${msg} Render skipped — call get_render to see the result.`);
@@ -398,7 +559,8 @@ export function createMcpServer(storage) {
     {
       description:
         "Render the sprite (or one animation frame) to an upscaled PNG and LOOK at it. " +
-        "This is your only way to see your work — use it after every drawing pass. " +
+        "draw already returns an inline render, so use get_render when changing scale/grid/target or when inline rendering was skipped. " +
+        "Inspect an enlarged render (scale 2-4) for pixel placement, and scale: 1 for the actual-size readability test before declaring the sprite done. " +
         "grid: true overlays a coordinate grid (useful when locating pixels to fix).",
       inputSchema: {
         sprite: z.string(),
@@ -551,11 +713,11 @@ export function createMcpServer(storage) {
     "fetch_reference",
     {
       description:
-        "Download a reference image for style study. Returns: the original, a pixelated version at " +
-        "the sprite's grid size (showing how much detail actually survives at that resolution), and a " +
-        "quantized palette ready for set_palette. Use BEFORE drawing when the user references a style " +
-        "or quality matters. Prefer CC0/CC-BY sources: kenney.nl, opengameart.org, lospec.com (palettes). " +
-        "PNG only.",
+        "Download a reference image for style study. Accepts HTTP(S) PNG URLs only — local file paths are rejected; inspect a local image with your host's image-reading tool instead. " +
+        "Returns: the original, a pixelated version at the exact target width x height (showing how much detail actually survives at that resolution), and a suggested palette " +
+        "argument block for set_palette (colors organized into light->dark ramp families, plus outlineIndex and rampFamilies). " +
+        "Use BEFORE drawing when the user references a style or quality matters. Prefer CC0/CC-BY sources: kenney.nl, opengameart.org, lospec.com (palettes). " +
+        "Pass sprite to match both its width and height, or gridSize for a square target.",
       inputSchema: {
         url: z.string().describe("http(s) URL of a PNG image"),
         sprite: z.string().optional().describe("existing sprite to match grid size against"),
@@ -568,31 +730,39 @@ export function createMcpServer(storage) {
       },
     },
     safe(async ({ url, sprite, colors, gridSize: gridArg }) => {
-      const gridSize = sprite ? storage.get(sprite).width : (gridArg ?? 32);
-      if (!GRID_SIZES.includes(gridSize)) {
-        throw new Error(`gridSize must be one of ${GRID_SIZES.join("/")} (got ${gridSize})`);
+      let width, height;
+      if (sprite) {
+        const s = storage.get(sprite);
+        width = s.width;
+        height = s.height;
+      } else {
+        width = gridArg ?? 32;
+        height = width;
+        if (!GRID_SIZES.includes(width)) {
+          throw new Error(`gridSize must be one of ${GRID_SIZES.join("/")} (got ${width})`);
+        }
       }
       const { png, path } = await fetchReference(url, storage.referencesDir);
-
-      // original view, capped at 512px on the long edge
-      const cap = 512 / Math.max(png.width, png.height);
-      const original = cap < 1 ? resizeAvg(png, Math.round(png.width * cap), Math.round(png.height * cap)) : png;
-
-      const pixelated = resizeAvg(png, gridSize, gridSize);
-      const display = upscaleNn(pixelated, Math.max(1, Math.floor(512 / gridSize)));
-      const palette = extractPalette(pixelated, colors ?? 12);
+      const prepared = prepareReference(png, { width, height, colors: colors ?? 12 });
+      const args = JSON.stringify(prepared.suggestion, null, 2);
 
       return {
         content: [
-          { type: "text", text: `Reference saved to ${path} (${png.width}x${png.height}). Below: original, then pixelated to ${gridSize}x${gridSize}.` },
-          { type: "image", data: PNG.sync.write(original).toString("base64"), mimeType: "image/png" },
-          { type: "image", data: PNG.sync.write(display).toString("base64"), mimeType: "image/png" },
+          {
+            type: "text",
+            text: `Reference saved to ${path} (${png.width}x${png.height}). Below: original, then pixelated to ${width}x${height} (exact target dimensions, not forced square).`,
+          },
+          { type: "image", data: PNG.sync.write(prepared.original).toString("base64"), mimeType: "image/png" },
+          { type: "image", data: PNG.sync.write(prepared.display).toString("base64"), mimeType: "image/png" },
           {
             type: "text",
             text:
-              `Extracted palette (${palette.length} colors, most frequent first): ${palette.join(", ")}\n` +
-              `Study the PIXELATED version — that is how much detail survives at ${gridSize}px; do not copy detail that only exists in the original. ` +
-              `The palette is ready for set_palette. Then draw per the sprite-draw workflow; the scale-2 render check still decides when you're done.`,
+              `Extracted ${prepared.extracted.colors.length} source colors. Study the PIXELATED version — that is how much detail survives at ${width}x${height}px; do not copy detail that only exists in the original.\n` +
+              `For a NEW sprite, call set_palette with these arguments (organized light→dark ramp families, NOT frequency ordered):\n` +
+              `${args}\n` +
+              `Then call get_palette for index-specific drawing guidance (outline index, litEllipse triples). ` +
+              `The suggested colors exclude transparent index 0 — set_palette prepends it; family/outline indices already include that slot. ` +
+              `The actual-size scale: 1 render still decides when you are done.`,
           },
         ],
       };
@@ -604,8 +774,9 @@ export function createMcpServer(storage) {
     {
       description:
         "Generate a sprite procedurally: run sandboxed painter JS on a big canvas (gridSize x scale), " +
-        "downsample to the grid, and quantize into a palette-indexed sprite. Best for organic/gradient-heavy " +
-        "art (foliage, rock, slime, fur) and grids >= 48 where hand-placed ops get expensive. " +
+        "downsample to the grid, and quantize into a palette-indexed sprite. Consider it for organic/gradient-heavy " +
+        "art (foliage, rock, slime, fur) and grids >= 48 where hand-placed ops get expensive — not an automatic " +
+        "choice for every large character; crisp hard-edged silhouettes are better with direct shape ops. " +
         "Painter API — W, H (canvas px), px(x, y, [r,g,b,a?]) set, over(x, y, [r,g,b,a?]) alpha-composite, " +
         "mix(a, b, t), clamp01(v), smooth(e0, e1, v), rng() (seeded, deterministic), log(...). " +
         "Write math (loops, lambert shading, noise), not per-pixel lists. " +
@@ -628,11 +799,11 @@ export function createMcpServer(storage) {
       const { sprite, logs } = generateSprite({ name, code, gridSize, scale, colors, seed });
       if (exists) storage.beginEdit(name);
       storage.save(sprite);
-      const ramps = sprite.rampFamilies?.length
-        ? `Ramps (light→dark): ${sprite.rampFamilies.map((f) => `${f.name} ${f.from}${f.to > f.from ? `-${f.to}` : ""}`).join(", ")} — litEllipse ramp: [i, i+1, i+2] within a family. `
-        : "";
+      const guidance = rampGuidance(sprite.rampFamilies);
       const msg =
-        `Generated "${name}" (${sprite.width}x${sprite.height}), ${sprite.palette.length - 1} palette colors. ${ramps}` +
+        `Generated "${name}" (${sprite.width}x${sprite.height}), ${sprite.palette.length - 1} palette colors, outline index ${sprite.outlineIndex}. ` +
+        (guidance ? `${guidance} ` : "") +
+        `${PROP_CONTRAST_REMINDER} ` +
         (logs.length ? `Painter log: ${logs.join(" | ")}. ` : "") +
         `Critique the render honestly; regenerate with overwrite: true or patch with draw.${headroomNote(sprite)}`;
       return {

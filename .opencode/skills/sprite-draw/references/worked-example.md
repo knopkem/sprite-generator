@@ -1,7 +1,8 @@
 # Worked Example: 16x16 Slime (verified output)
 
 This is a real, complete drawing session. Follow this shape: 3 tool calls,
-2 renders. Note how little drawing happens by hand — `outline` and ramp
+with `draw` returning the first render inline and `get_render` used for the
+final check. Note how little drawing happens by hand — `outline` and ramp
 neighbors do the polish work.
 
 Palette indices used (default palette): 1 = outline, 13 = green light,
@@ -47,8 +48,13 @@ meets the ground?
 
 ```
 draw({ sprite: "slime", ops: [{ type: "pixels", pixels: [...] }] })
-get_render({ sprite: "slime", scale: 2 })   // the game-size truth test
+get_render({ sprite: "slime", scale: 1 })   // the actual-size truth test
+get_render({ sprite: "slime", scale: 4 })   // enlarged: inspect pixel placement, not size
 ```
+
+`draw` already returned a render inline for call 2 — critique that instead of
+asking for the same image twice. The final sign-off needs `scale: 1`; a
+`scale: 2` view is an enlarged inspection, not the game-size test.
 
 ## What to copy from this example
 

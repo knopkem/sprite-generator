@@ -25,7 +25,12 @@ Targeted editing without destroying what already works.
 ## Rules
 
 - Full-grid rewrites are the enemy. They silently drift unrelated details.
-- When changing a color everywhere, prefer `set_palette` (swaps the palette
-  entry) over repainting pixels.
+- `set_palette` replaces the ENTIRE ordered palette (it clamps existing pixel
+  indices when the new palette is shorter) — it does not swap one entry. For a
+  one-color change, read the complete palette with `get_palette`, preserve its
+  order and length, and change only that hex. Alternatively use the viewer's
+  single-index palette editor (the REST palette route).
 - If the request is ambiguous ("make it pop more"), propose 1-2 concrete
-  options and render the safest one.
+  options and render the safest one at an enlarged scale.
+- Before calling it done, inspect a `scale: 1` render for actual-size
+  readability; an enlarged view is for locating pixels, not a substitute.

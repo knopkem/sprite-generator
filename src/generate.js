@@ -17,101 +17,22 @@ import { PNG } from "pngjs";
 import { createSprite, GRID_SIZES } from "./model.js";
 import { parseColor } from "./render.js";
 import { resizeAvg, extractPalette } from "./reference.js";
+import { organizePalette, suggestOutlineIndex } from "./palette.js";
+
+export { organizePalette };
 
 export const MAX_BIG_SIDE = 1024;
 export const PAINTER_TIMEOUT_MS = 2000;
-
-const HUE_GAP = 28; // degrees; a larger hue jump starts a new family
-const NEUTRAL_SAT = 0.18; // below this saturation a color joins the neutral family
-const HUE_NAMES = [
-  [15, "red"], [48, "orange"], [68, "yellow"], [150, "green"], [180, "teal"],
-  [200, "cyan"], [250, "blue"], [285, "purple"], [330, "pink"], [361, "red"],
-];
-
-function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  if (max === min) return { h: 0, s: 0, l };
-  const d = max - min;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  let h;
-  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-  else if (max === g) h = ((b - r) / d + 2) / 6;
-  else h = ((r - g) / d + 4) / 6;
-  return { h: h * 360, s, l };
-}
-
-function hueName(h) {
-  for (const [limit, name] of HUE_NAMES) if (h < limit) return name;
-  return "red";
-}
-
-/**
- * Organize extracted palette hexes into ramp families: same-hue shades become
- * adjacent, ordered light -> dark (the DEFAULT_PALETTE ramp convention, so
- * litEllipse ramp: [i, i+1, i+2] picks shading neighbors). Families are
- * ordered by pixel usage, most-used first; low-saturation colors form a
- * "neutral" family. Hue is circular — reds at both ends merge.
- * @returns {{ palette: string[], families: Array<{name, from, to}>, remap: number[] }}
- *   palette includes transparent at index 0; families use palette indices;
- *   remap maps extracted-color index -> final palette index.
- */
-export function organizePalette(hexes, counts) {
-  const entries = hexes.map((hex, i) => {
-    const [r, g, b] = parseColor(hex) ?? [0, 0, 0, 0];
-    return { hex, ...rgbToHsl(r, g, b), count: counts?.[i] ?? 1, old: i };
-  });
-  const neutral = entries.filter((e) => e.s < NEUTRAL_SAT);
-  const chromatic = entries.filter((e) => e.s >= NEUTRAL_SAT).sort((a, b) => a.h - b.h);
-
-  let clusters = [];
-  for (const e of chromatic) {
-    const last = clusters.at(-1);
-    if (!last || e.h - last.at(-1).h > HUE_GAP) clusters.push([]);
-    clusters.at(-1).push(e);
-  }
-  // hue is circular: merge the two end clusters when they wrap (e.g. reds)
-  if (clusters.length > 1) {
-    const first = clusters[0], last = clusters.at(-1);
-    if (first[0].h + 360 - last.at(-1).h <= HUE_GAP) {
-      clusters = [[...last, ...first], ...clusters.slice(1, -1)];
-    }
-  }
-  if (neutral.length) clusters.push(neutral);
-
-  // light -> dark within a family; families by usage
-  for (const c of clusters) c.sort((a, b) => b.l - a.l);
-  clusters.sort((a, b) => b.reduce((s, e) => s + e.count, 0) - a.reduce((s, e) => s + e.count, 0));
-
-  // merge adjacent families that share a name (hue gap split one family)
-  const merged = [];
-  for (const c of clusters) {
-    const name = c[0].s < NEUTRAL_SAT ? "neutral" : hueName(c[0].h);
-    const prev = merged.at(-1);
-    if (prev && prev.name === name) prev.entries.push(...c);
-    else merged.push({ name, entries: [...c] });
-  }
-  for (const f of merged) f.entries.sort((a, b) => b.l - a.l);
-
-  const palette = ["#00000000"];
-  const families = [];
-  const remap = new Array(hexes.length).fill(0);
-  for (const f of merged) {
-    const from = palette.length;
-    for (const e of f.entries) {
-      remap[e.old] = palette.length;
-      palette.push(e.hex);
-    }
-    families.push({ name: f.name, from, to: palette.length - 1 });
-  }
-  return { palette, families, remap };
-}
 
 function checkColor(c, where) {
   if (!Array.isArray(c) || c.length < 3 || c.length > 4 || c.some((v) => typeof v !== "number" || !isFinite(v))) {
     throw new Error(`${where}: color must be an array [r, g, b, a?] of numbers`);
   }
+}
+
+/** Normalize an RGB or RGBA painter color to [r, g, b, a]. */
+function rgba(c) {
+  return c.length === 4 ? c : [c[0], c[1], c[2], 255];
 }
 
 /**
@@ -132,7 +53,9 @@ export function runPainter(code, W, H, seed = 1) {
   const mix = (a, b, t) => {
     checkColor(a, "mix(a, ...)");
     checkColor(b, "mix(b, ...)");
-    return a.map((v, i) => v + (b[i] - v) * t);
+    const ca = rgba(a);
+    const cb = rgba(b);
+    return ca.map((v, i) => v + (cb[i] - v) * t);
   };
   const smooth = (e0, e1, v) => {
     const t = clamp01((v - e0) / (e1 - e0));
@@ -201,7 +124,14 @@ export function generateSprite({ name, code, gridSize = 48, scale = 4, colors = 
   const small = resizeAvg(png, gridSize, gridSize);
 
   const extracted = extractPalette(small, colors);
-  const extRgb = extracted.map((c) => parseColor(c) ?? [0, 0, 0, 0]);
+  const extRgb = extracted.map((c) => {
+    const parsed = parseColor(c);
+    // extractPalette() only returns #rrggbb, so this is unreachable unless the
+    // extractor itself regresses. Fail loudly instead of silently painting
+    // transparent black and producing invisible art.
+    if (!parsed) throw new Error(`internal error: palette extractor returned invalid color "${c}"`);
+    return parsed;
+  });
 
   // one nearest-color pass: assignment into the extracted palette + usage counts
   const assign = new Int16Array(gridSize * gridSize).fill(-1);
@@ -226,6 +156,9 @@ export function generateSprite({ name, code, gridSize = 48, scale = 4, colors = 
   const sprite = createSprite(name, gridSize, gridSize);
   sprite.palette = palette;
   sprite.rampFamilies = families; // palette-indexed ramp map, surfaced by get_palette
+  // index 1 is not necessarily dark in a generated palette; make the outline
+  // default follow the actual palette.
+  sprite.outlineIndex = suggestOutlineIndex(palette);
   for (let y = 0; y < gridSize; y++) {
     for (let x = 0; x < gridSize; x++) {
       const a = assign[y * gridSize + x];
