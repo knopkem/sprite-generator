@@ -7,6 +7,7 @@ import { encodeGrid } from "./rle.js";
 import { applyOps, targetGrid, mirrorHorizontal, addAnimation, copyFrame, normalizeHex, resizeSprite, contentBounds, GRID_SIZES, DEFAULT_PALETTE, PALETTE_FAMILIES } from "./model.js";
 import { renderPng, renderOnionSkin } from "./render.js";
 import { exportSprite } from "./export.js";
+import { generateSprite } from "./generate.js";
 import { resizeAvg, upscaleNn, extractPalette, fetchReference } from "./reference.js";
 import { PNG } from "pngjs";
 import fs from "node:fs";
@@ -17,21 +18,34 @@ Contract (read before drawing):
 - Grids are ${GRID_SIZES.join("/")} px. Default 32. Above 32 quality degrades — warn the user.
 - Palette index 0 is ALWAYS transparent. Reference colors by index only.
 - Draw in BULK with shape ops, not scanline math: ellipse for heads/round
-  shapes, line for limbs/props/arcs, rect for blocks, block for local RLE
-  regions (rows have independent widths), rows (full-width RLE, must sum to
+  shapes, line for limbs/props, curve for arcs (quadratic bezier: a bow is
+  ONE curve op, not hand-chained segments), rect for blocks, block for small
+  local RLE regions (rows have independent widths), rows (full-width RLE, must sum to
   grid width) only for whole-sprite fills. Never hundreds of single pixels.
-- Workflow: set_palette (optional) -> draw silhouette -> get_render -> critique
-  the render honestly -> fix with small draw patches -> repeat until good.
-- ALWAYS get_render after each drawing pass. Never claim success without looking.
+- Workflow: set_palette (optional) -> draw silhouette -> critique the render
+  honestly (draw returns it inline; pass render: false to skip) -> fix with
+  small draw patches -> repeat until good. undo/redo recover a bad pass
+  without redrawing.
+- ALWAYS look at the render after each drawing pass. Never claim success without looking.
 - The default palette is ramp-based: each hue family has light/mid/dark as
   adjacent indices. Shade with the darker ramp neighbor, highlight with the lighter.
 - Deterministic ops beat hand-drawing: "outline" wraps the silhouette in an
-  outline color; "shift" moves a whole frame (animation bob); mirror: true
-  mirrors the left half for symmetric characters.
+  outline color (after the base pass use scope: "new" so only pixels added in
+  that call get outlined — thin details like bowstrings stay thin); "shift"
+  moves a whole frame (animation bob); mirror: true mirrors the left half for
+  symmetric characters.
 - Shading ops carry the math: "litEllipse" paints a lambert-shaded ellipse
   onto a [light, mid, dark] ramp with ordered dither (one op = a shaded
   blob/sphere; fractional centers allowed); "rampRect" paints a gradient rect
   along v/h. Prefer them over hand-placed shading bands.
+- "generate_sprite" = procedural path: your sandboxed JS paints a big canvas
+  (gridSize x scale; API: px/over/mix/clamp01/smooth/rng/log), then the server
+  downsamples and quantizes it into an indexed sprite. Best for organic,
+  gradient-heavy art (foliage, rock, slimes, fur) or grids >= 48. Write math
+  (loops, lambert, noise), never per-pixel lists. Iterate via overwrite: true.
+  The generated palette is auto-organized into light->dark ramp families
+  (reported in the result and by get_palette), so litEllipse/rampRect compose
+  on generated sprites.
 - Before declaring a sprite done: get_render with scale 2 and judge whether it
   still reads at game size. If it only looks good big, it isn't done.
 - Leave headroom: characters at ~75-85% of grid height, 2-4px air per side.
@@ -79,6 +93,10 @@ const drawOp = z.discriminatedUnion("type", [
     type: z.literal("outline"),
     color: z.number().int().min(0).optional().describe("outline color index (default 1)"),
     diagonals: z.boolean().optional().describe("also outline diagonal neighbors (thicker)"),
+    scope: z
+      .enum(["all", "new"])
+      .optional()
+      .describe('"all" (default) wraps the whole silhouette; "new" only wraps pixels added in THIS draw call — detail passes can grow the shape without re-outlining thin elements (strings, weapon edges)'),
   }),
   z.object({
     type: z.literal("fill"),
@@ -92,6 +110,17 @@ const drawOp = z.discriminatedUnion("type", [
     y0: z.number().int(),
     x1: z.number().int(),
     y1: z.number().int(),
+    color: z.number().int().min(0),
+    thickness: z.number().int().min(1).max(4).optional(),
+  }),
+  z.object({
+    type: z.literal("curve"),
+    x0: z.number().int().describe("start x"),
+    y0: z.number().int().describe("start y"),
+    cx: z.number().int().describe("bezier control x (may be off-grid for shallow arcs)"),
+    cy: z.number().int().describe("bezier control y"),
+    x1: z.number().int().describe("end x"),
+    y1: z.number().int().describe("end y"),
     color: z.number().int().min(0),
     thickness: z.number().int().min(1).max(4).optional(),
   }),
@@ -252,6 +281,7 @@ export function createMcpServer(storage) {
       const s = storage.get(sprite);
       storage.beginEdit(sprite);
       s.palette = ["#00000000", ...colors.map(normalizeHex)];
+      delete s.rampFamilies; // a user-set palette invalidates the generated ramp structure
       // clamp existing grid indices into the new palette
       const max = s.palette.length - 1;
       for (const grid of [s.grid, ...Object.values(s.animations).flatMap((a) => a.frames)]) {
@@ -279,6 +309,13 @@ export function createMcpServer(storage) {
             "Distinct props (bow, quiver, clothing) should use DIFFERENT families — same-hue adjacent elements read as one blob."
         );
       }
+      if (s.rampFamilies?.length) {
+        lines.push(
+          "Generated ramps (light→dark): " +
+            s.rampFamilies.map((f) => `${f.name} ${f.from}${f.to > f.from ? `-${f.to}` : ""}`).join(", ") +
+            " — use ramp: [i, i+1, i+2] within a family for litEllipse."
+        );
+      }
       return text(lines.join("\n"));
     })
   );
@@ -292,22 +329,26 @@ export function createMcpServer(storage) {
         "rect for blocks, block for a small local RLE region (rows have independent widths), " +
         'rows (full-width RLE, each row must sum to grid width) for whole-sprite fills. ' +
         'Use "pixels" (max 512) for small fixes, "clear" to wipe. ' +
-        '"outline" wraps the silhouette in an outline color automatically (draw flat shapes first, outline after). ' +
+        '"outline" wraps the silhouette in an outline color automatically (draw flat shapes first, outline after; scope: "new" re-outlines only pixels added in that call). ' +
+        '"curve" paints a quadratic bezier arc (x0,y0 -> cx,cy -> x1,y1) — one op for bows, capes, tails, no hand-chained segments. ' +
         '"litEllipse" shades an ellipse onto a [light, mid, dark] ramp with light direction and dithered bands (one op = a shaded blob). ' +
         '"rampRect" paints a gradient rect along v/h. ' +
         '"fill" flood-fills a region from a point. ' +
         '"shift" translates the whole grid by dx/dy (animation bob/squash). ' +
         "mirror: true mirrors the left half onto the right AFTER ops run (for symmetric sprites). " +
         "Palette ramps: shading = pick the neighbor index within a ramp family (see get_palette). " +
-        "Always get_render afterwards and look at the result.",
+        "The result includes a render of the outcome (pass render: false to skip, e.g. batch animation patching) — critique it before the next pass.",
       inputSchema: {
         sprite: z.string(),
         ops: z.array(drawOp).min(1).max(50),
         frame: frameRef,
         mirror: z.boolean().optional(),
+        render: z.boolean().optional().describe("include a PNG render of the result in this response (default true) — the vision loop without a separate get_render call"),
+        scale: z.number().int().min(1).max(32).optional().describe("render px scale, default auto (~512px output)"),
+        grid: z.boolean().optional().describe("overlay a coordinate grid on the render"),
       },
     },
-    safe(({ sprite, ops, frame, mirror }) => {
+    safe(({ sprite, ops, frame, mirror, render, scale, grid: showGrid }) => {
       const s = storage.get(sprite);
       storage.beginEdit(sprite);
       const grid = targetGrid(s, frame);
@@ -315,7 +356,40 @@ export function createMcpServer(storage) {
       if (mirror) mirrorHorizontal(s, grid);
       storage.save(s);
       const target = frame ? `frame ${frame.index} of "${frame.anim}"` : "base sprite";
-      return text(`Applied ${ops.length} op(s) to ${target}${mirror ? " (mirrored)" : ""}. Now call get_render and critique the result.${frame ? "" : headroomNote(s)}`);
+      const msg = `Applied ${ops.length} op(s) to ${target}${mirror ? " (mirrored)" : ""}.${frame ? "" : headroomNote(s)}`;
+      if (render === false) return text(`${msg} Render skipped — call get_render to see the result.`);
+      return {
+        content: [
+          { type: "text", text: `${msg} Render below — critique it honestly before the next pass.` },
+          png(renderPng(grid, s.palette, { scale, grid: showGrid })).content[0],
+        ],
+      };
+    })
+  );
+
+  server.registerTool(
+    "undo",
+    {
+      description:
+        "Undo the last change to a sprite (server-side snapshot; the same stack the viewer's Z key uses). " +
+        "Recover from a bad pass instead of redrawing: undo, then re-apply a corrected draw.",
+      inputSchema: { sprite: z.string() },
+    },
+    safe(({ sprite }) => {
+      const s = storage.undo(sprite);
+      return text(`Undid last change on "${sprite}" (now version ${s.version}). Call get_render to see the restored state.`);
+    })
+  );
+
+  server.registerTool(
+    "redo",
+    {
+      description: "Redo the last undone change to a sprite.",
+      inputSchema: { sprite: z.string() },
+    },
+    safe(({ sprite }) => {
+      const s = storage.redo(sprite);
+      return text(`Redid change on "${sprite}" (now version ${s.version}).`);
     })
   );
 
@@ -484,12 +558,20 @@ export function createMcpServer(storage) {
         "PNG only.",
       inputSchema: {
         url: z.string().describe("http(s) URL of a PNG image"),
-        sprite: z.string().optional().describe("sprite to match grid size against (default 32)"),
+        sprite: z.string().optional().describe("existing sprite to match grid size against"),
+        gridSize: z
+          .number()
+          .int()
+          .optional()
+          .describe(`grid size to pixelate against when no sprite exists yet — one of ${GRID_SIZES.join("/")} (default 32)`),
         colors: z.number().int().min(2).max(31).optional().describe("palette size target (default 12)"),
       },
     },
-    safe(async ({ url, sprite, colors }) => {
-      const gridSize = sprite ? storage.get(sprite).width : 32;
+    safe(async ({ url, sprite, colors, gridSize: gridArg }) => {
+      const gridSize = sprite ? storage.get(sprite).width : (gridArg ?? 32);
+      if (!GRID_SIZES.includes(gridSize)) {
+        throw new Error(`gridSize must be one of ${GRID_SIZES.join("/")} (got ${gridSize})`);
+      }
       const { png, path } = await fetchReference(url, storage.referencesDir);
 
       // original view, capped at 512px on the long edge
@@ -512,6 +594,51 @@ export function createMcpServer(storage) {
               `Study the PIXELATED version — that is how much detail survives at ${gridSize}px; do not copy detail that only exists in the original. ` +
               `The palette is ready for set_palette. Then draw per the sprite-draw workflow; the scale-2 render check still decides when you're done.`,
           },
+        ],
+      };
+    })
+  );
+
+  server.registerTool(
+    "generate_sprite",
+    {
+      description:
+        "Generate a sprite procedurally: run sandboxed painter JS on a big canvas (gridSize x scale), " +
+        "downsample to the grid, and quantize into a palette-indexed sprite. Best for organic/gradient-heavy " +
+        "art (foliage, rock, slime, fur) and grids >= 48 where hand-placed ops get expensive. " +
+        "Painter API — W, H (canvas px), px(x, y, [r,g,b,a?]) set, over(x, y, [r,g,b,a?]) alpha-composite, " +
+        "mix(a, b, t), clamp01(v), smooth(e0, e1, v), rng() (seeded, deterministic), log(...). " +
+        "Write math (loops, lambert shading, noise), not per-pixel lists. " +
+        "Returns the render — critique it, then regenerate with tweaked code + overwrite: true, or patch with draw.",
+      inputSchema: {
+        name: z.string().describe("sprite name (letters, digits, - and _)"),
+        code: z.string().describe("painter JS, runs once in a sandbox"),
+        gridSize: z.number().int().optional().describe(`one of ${GRID_SIZES.join("/")} (default 48)`),
+        scale: z.number().int().min(2).max(8).optional().describe("big-canvas multiplier (default 4)"),
+        colors: z.number().int().min(2).max(30).optional().describe("palette size target (default 12)"),
+        seed: z.number().int().optional().describe("rng seed (default 1)"),
+        overwrite: z.boolean().optional().describe("replace an existing sprite (grid + palette + animations reset)"),
+      },
+    },
+    safe(({ name, code, gridSize, scale, colors, seed, overwrite }) => {
+      const exists = storage.has(name);
+      if (exists && !overwrite) {
+        throw new Error(`sprite "${name}" already exists — pass overwrite: true to regenerate (replaces grid, palette, and animations)`);
+      }
+      const { sprite, logs } = generateSprite({ name, code, gridSize, scale, colors, seed });
+      if (exists) storage.beginEdit(name);
+      storage.save(sprite);
+      const ramps = sprite.rampFamilies?.length
+        ? `Ramps (light→dark): ${sprite.rampFamilies.map((f) => `${f.name} ${f.from}${f.to > f.from ? `-${f.to}` : ""}`).join(", ")} — litEllipse ramp: [i, i+1, i+2] within a family. `
+        : "";
+      const msg =
+        `Generated "${name}" (${sprite.width}x${sprite.height}), ${sprite.palette.length - 1} palette colors. ${ramps}` +
+        (logs.length ? `Painter log: ${logs.join(" | ")}. ` : "") +
+        `Critique the render honestly; regenerate with overwrite: true or patch with draw.${headroomNote(sprite)}`;
+      return {
+        content: [
+          { type: "text", text: msg },
+          png(renderPng(sprite.grid, sprite.palette)).content[0],
         ],
       };
     })

@@ -12,6 +12,7 @@ import { Storage } from "./storage.js";
 import { targetGrid, applyOps, mirrorHorizontal, insertFrame, deleteFrame, moveFrame, setFps, normalizeHex, resizeSprite } from "./model.js";
 import { renderPng } from "./render.js";
 import { exportSprite } from "./export.js";
+import { generateSprite } from "./generate.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(__dirname, "..", "public");
@@ -114,6 +115,7 @@ async function handleApi(req, res, url) {
       if (!Number.isInteger(idx) || idx < 1 || idx >= s.palette.length) throw new Error("palette index out of range (index 0 is locked to transparent)");
       storage.beginEdit(s.name);
       s.palette[idx] = normalizeHex(String(body.color));
+      delete s.rampFamilies; // a manual palette edit invalidates the generated ramp structure
       storage.save(s);
       return json(res, 200, { ok: true, version: s.version });
     } catch (e) {
@@ -174,6 +176,32 @@ async function handleApi(req, res, url) {
       setFps(s, m[2], Number(body.fps));
       storage.save(s);
       return json(res, 200, { ok: true, version: s.version });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
+  m = /^\/api\/sprite\/([\w-]+)\/generate$/.exec(p);
+  if (m && req.method === "POST") {
+    // Same generation path as the MCP generate_sprite tool.
+    try {
+      const body = JSON.parse(await readBody(req));
+      if (typeof body.code !== "string" || !body.code) throw new Error("body.code (painter JS string) is required");
+      const exists = storage.has(m[1]);
+      if (exists && !body.overwrite) {
+        throw new Error(`sprite "${m[1]}" already exists — set overwrite: true to regenerate`);
+      }
+      const { sprite, logs } = generateSprite({
+        name: m[1],
+        code: body.code,
+        gridSize: body.gridSize,
+        scale: body.scale,
+        colors: body.colors,
+        seed: body.seed,
+      });
+      if (exists) storage.beginEdit(sprite.name);
+      storage.save(sprite);
+      return json(res, 200, { ok: true, version: sprite.version, colors: sprite.palette.length - 1, ramps: sprite.rampFamilies, logs });
     } catch (e) {
       return json(res, 400, { error: e.message });
     }

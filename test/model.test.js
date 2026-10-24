@@ -90,6 +90,55 @@ test("outline wraps opaque pixels without cascading", () => {
   assert.equal(s.grid[2][5], 0);
 });
 
+test("outline scope:new only wraps pixels added in the same call", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [
+    { type: "rect", x: 2, y: 2, w: 3, h: 3, color: 14 },
+    { type: "outline" },
+  ]);
+  assert.equal(s.grid[1][1], 0); // diagonal of old silhouette, untouched
+  // second pass: grow a 1px stalk on top, then outline only the growth
+  applyOps(s, s.grid, [
+    { type: "pixels", pixels: [{ x: 3, y: 0, color: 14 }] },
+    { type: "outline", scope: "new" },
+  ]);
+  assert.equal(s.grid[0][2], 1); // left of stalk
+  assert.equal(s.grid[0][4], 1); // right of stalk
+  assert.equal(s.grid[1][1], 0); // old silhouette NOT re-wrapped
+  // contrast: scope "all" wraps everything, including old outline's diagonals
+  applyOps(s, s.grid, [{ type: "outline" }]);
+  assert.equal(s.grid[1][1], 1);
+});
+
+test("curve bends a quadratic bezier toward the control point", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "curve", x0: 2, y0: 2, cx: 8, cy: 8, x1: 14, y1: 2, color: 5 }]);
+  assert.equal(s.grid[2][2], 5); // start endpoint
+  assert.equal(s.grid[2][14], 5); // end endpoint
+  assert.equal(s.grid[5][8], 5); // apex: t=0.5 -> (8, 5)
+  assert.equal(s.grid[2][8], 0); // straight-line midpoint stays empty
+});
+
+test("curve paints with thickness and validates endpoints", () => {
+  const s = createSprite("t", 16, 16);
+  assert.throws(
+    () => applyOps(s, s.grid, [{ type: "curve", x0: -1, y0: 0, cx: 4, cy: 4, x1: 8, y1: 0, color: 1 }]),
+    /out of bounds/
+  );
+  applyOps(s, s.grid, [{ type: "curve", x0: 1, y0: 14, cx: 8, cy: 10, x1: 14, y1: 14, color: 3, thickness: 2 }]);
+  // apex at t=0.5 -> (7.75, 12) rounds to (8,12); 2px brush offsets +x/+y
+  assert.equal(s.grid[12][8], 3);
+  assert.equal(s.grid[13][9], 3);
+});
+
+test("curve tolerates an off-grid control point (shallow arc, clipped paint)", () => {
+  const s = createSprite("t", 16, 16);
+  applyOps(s, s.grid, [{ type: "curve", x0: 1, y0: 1, cx: 8, cy: -6, x1: 14, y1: 1, color: 2 }]);
+  assert.equal(s.grid[1][1], 2);
+  assert.equal(s.grid[1][14], 2);
+  assert.equal(s.grid[0][8], 0); // arc apex is above the grid, nothing painted at top
+});
+
 test("shift translates grid and drops off-grid pixels", () => {
   const s = createSprite("t", 16, 16);
   applyOps(s, s.grid, [

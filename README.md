@@ -46,11 +46,20 @@ Shipped in `.opencode/skills/`, discovered automatically by opencode:
 ## MCP tools
 
 `create_sprite` · `resize_sprite` (grow grid for animation headroom) ·
-`fetch_reference` (download → pixelate to grid size → extract palette) ·
-`set_palette` / `get_palette` · `draw` (shape ops: `ellipse`, `line`, `rect`,
+`generate_sprite` (procedural path: sandboxed painter JS on a 4x canvas →
+downsample → quantize into an indexed sprite, palette auto-organized into
+light→dark ramp families so the shading ops compose on top; best for
+organic/gradient-heavy art and grids ≥ 48) ·
+`fetch_reference` (download → pixelate to grid size → extract palette;
+accepts an existing sprite name or a bare `gridSize`) ·
+`set_palette` / `get_palette` · `draw` (shape ops: `ellipse`, `line`,
+`curve` (quadratic bezier arc — one op for bows/capes/tails), `rect`,
 `block`; shading ops: `litEllipse` (lambert-shaded ellipse onto a [light, mid,
 dark] ramp, dithered), `rampRect` (gradient rect, v/h); bulk `rows` RLE;
-`pixels`/`clear`/`fill`; deterministic `outline` and `shift`; optional mirror) ·
+`pixels`/`clear`/`fill`; deterministic `outline` (`scope: "new"` re-outlines
+only pixels added in that call — thin details stay thin) and `shift`;
+optional mirror; returns the render inline unless `render: false`) ·
+`undo` / `redo` (server-side snapshots, shared with the viewer) ·
 `get_render` (PNG image result — the agent's eyes) ·
 `export_render` (file fallback for hosts without image support) · `get_grid`
 · `list_sprites` / `get_state` · `add_animation` · `copy_frame` ·

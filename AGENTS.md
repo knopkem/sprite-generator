@@ -26,7 +26,8 @@ npm run serve -- --port=8080 --root=/path/to/project
 | `src/storage.js` | fs persistence, in-memory cache, undo/redo snapshots, change events |
 | `src/render.js` | palette grid -> PNG (pngjs); renders and onion skins |
 | `src/export.js` | PNG sheet + Aseprite-style JSON |
-| `src/reference.js` | download -> area-average pixelate -> palette extraction (only outbound network fetch in the project) |
+| `src/reference.js` | download -> area-average pixelate (alpha-weighted) -> palette extraction (only outbound network fetch in the project) |
+| `src/generate.js` | sandboxed painter JS (node:vm, no modules, CPU timeout) -> downsample -> quantize; palette organized into light->dark ramp families (`sprite.rampFamilies`) |
 | `public/js/` | viewer as plain ES modules, entry `app.js`; no build artifacts |
 
 ## Invariants that break things silently

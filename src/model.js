@@ -131,10 +131,15 @@ function checkBounds(sprite, x, y) {
  *   { type: "rect", x, y, w, h, color }
  *   { type: "pixels", pixels: [{x, y, color}, ...] }  — max MAX_PIXELS_PER_OP
  *   { type: "clear", color?: 0 }
+ *   { type: "outline", color?: 1, diagonals?, scope?: "all"|"new" }  — "new" only wraps pixels added in this call
+ *   { type: "curve", x0, y0, cx, cy, x1, y1, color, thickness? }  — quadratic bezier arc
  *   { type: "litEllipse", cx, cy, rx, ry, ramp: [light, mid, dark], light?: [x, y], hi?, lo?, dither? }
  *   { type: "rampRect", x, y, w, h, ramp: [...], dir?: "v"|"h" }
  */
 export function applyOps(sprite, grid, ops) {
+  // State at call start, used by outline scope:"new" to tell freshly-added
+  // pixels apart from the existing silhouette.
+  const preCall = grid.map((r) => [...r]);
   for (const [i, op] of ops.entries()) {
     const where = `op ${i} (${op.type})`;
     switch (op.type) {
@@ -180,24 +185,30 @@ export function applyOps(sprite, grid, ops) {
         break;
       }
       case "outline": {
-        // Wrap all opaque pixels in an outline color. Computed from a snapshot
+        // Wrap opaque pixels in an outline color. Computed from a snapshot
         // so the outline itself doesn't cascade.
+        // scope "all" (default) wraps the whole silhouette; scope "new" only
+        // wraps pixels that became opaque during THIS draw call — detail
+        // passes can grow the shape without re-fattening existing thin
+        // elements (bowstrings, weapon edges) with a second outline.
         const c = op.color ?? 1;
         checkColor(sprite, c);
+        const onlyNew = op.scope === "new";
         const snapshot = grid.map((r) => [...r]);
+        const isAnchor = (x, y) => snapshot[y][x] !== 0 && (!onlyNew || preCall[y][x] === 0);
         for (let y = 0; y < sprite.height; y++) {
           for (let x = 0; x < sprite.width; x++) {
             if (snapshot[y][x] !== 0) continue;
             const touchesOpaque =
-              (y > 0 && snapshot[y - 1][x] !== 0) ||
-              (y < sprite.height - 1 && snapshot[y + 1][x] !== 0) ||
-              (x > 0 && snapshot[y][x - 1] !== 0) ||
-              (x < sprite.width - 1 && snapshot[y][x + 1] !== 0) ||
+              (y > 0 && isAnchor(x, y - 1)) ||
+              (y < sprite.height - 1 && isAnchor(x, y + 1)) ||
+              (x > 0 && isAnchor(x - 1, y)) ||
+              (x < sprite.width - 1 && isAnchor(x + 1, y)) ||
               (op.diagonals &&
-                ((y > 0 && x > 0 && snapshot[y - 1][x - 1] !== 0) ||
-                  (y > 0 && x < sprite.width - 1 && snapshot[y - 1][x + 1] !== 0) ||
-                  (y < sprite.height - 1 && x > 0 && snapshot[y + 1][x - 1] !== 0) ||
-                  (y < sprite.height - 1 && x < sprite.width - 1 && snapshot[y + 1][x + 1] !== 0)));
+                ((y > 0 && x > 0 && isAnchor(x - 1, y - 1)) ||
+                  (y > 0 && x < sprite.width - 1 && isAnchor(x + 1, y - 1)) ||
+                  (y < sprite.height - 1 && x > 0 && isAnchor(x - 1, y + 1)) ||
+                  (y < sprite.height - 1 && x < sprite.width - 1 && isAnchor(x + 1, y + 1))));
             if (touchesOpaque) grid[y][x] = c;
           }
         }
@@ -228,6 +239,36 @@ export function applyOps(sprite, grid, ops) {
           const e2 = 2 * err;
           if (e2 >= dy) { err += dy; x0 += sx; }
           if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+        break;
+      }
+      case "curve": {
+        // Quadratic bezier from (x0,y0) to (x1,y1) bent toward control point
+        // (cx,cy). Sampled densely and painted with the same centered square
+        // brush as "line" — one op replaces hand-chained line segments for
+        // arcs (bows, capes, tails). The control point is not bounds-checked:
+        // a control off-grid is a legitimate way to get a shallow arc;
+        // painting is clipped. Endpoints must be on-grid (same as "line").
+        checkColor(sprite, op.color);
+        checkBounds(sprite, op.x0, op.y0);
+        checkBounds(sprite, op.x1, op.y1);
+        const th = op.thickness ?? 1;
+        const off = Math.floor((th - 1) / 2);
+        const { x0, y0, cx, cy, x1, y1 } = op;
+        const approxLen = Math.hypot(cx - x0, cy - y0) + Math.hypot(x1 - cx, y1 - cy);
+        const steps = Math.max(8, Math.ceil(approxLen * 2));
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const u = 1 - t;
+          const px = Math.round(u * u * x0 + 2 * u * t * cx + t * t * x1);
+          const py = Math.round(u * u * y0 + 2 * u * t * cy + t * t * y1);
+          for (let oy = 0; oy < th; oy++) {
+            for (let ox = 0; ox < th; ox++) {
+              const bx = px - off + ox;
+              const by = py - off + oy;
+              if (bx >= 0 && bx < sprite.width && by >= 0 && by < sprite.height) grid[by][bx] = op.color;
+            }
+          }
         }
         break;
       }
