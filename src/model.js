@@ -1,13 +1,18 @@
 // Sprite data model: pure operations on sprite objects, no I/O.
 //
-// Sprite shape:
+// Sprite shape (layers, Option A — base sprite only; animation frames stay flat):
 // {
 //   name, width, height,
 //   palette: string[]            // hex colors, index 0 = transparent
-//   grid: number[][]             // palette indices, [y][x]
+//   outlineIndex: number         // default outline op color
+//   layers: [{ name, visible }]  // order = z-order, index 0 = bottom
+//   grids: { [layerName]: number[][] }  // stored state; composite is derived
+//   rampFamilies?: [{ name, from, to }]
 //   animations: { [name]: { fps: number, frames: number[][][] } },
 //   version: number
 // }
+// There is no stored `sprite.grid`: render/export flatten the visible layers,
+// and draw ops target one layer (default: the topmost).
 
 import { decodeRow, decodeRuns } from "./rle.js";
 
@@ -109,21 +114,137 @@ export function createSprite(name, width, height) {
     height,
     palette: [...DEFAULT_PALETTE],
     outlineIndex: 1,
-    grid: blankGrid(width, height),
+    layers: [{ name: "base", visible: true }],
+    grids: { base: blankGrid(width, height) },
     animations: {},
     version: 1,
   };
 }
 
-/** Resolve which grid an operation targets: base grid or an animation frame. */
-export function targetGrid(sprite, frame) {
-  if (!frame) return sprite.grid;
-  const anim = sprite.animations[frame.anim];
-  if (!anim) throw new Error(`no animation "${frame.anim}" on sprite "${sprite.name}"`);
-  if (frame.index < 0 || frame.index >= anim.frames.length) {
-    throw new Error(`frame index ${frame.index} out of range (animation "${frame.anim}" has ${anim.frames.length} frames)`);
+/**
+ * Upgrade a legacy sprite (single `grid`, no layers) to the layered storage
+ * shape. Idempotent. Called on load so old project files keep working.
+ */
+export function migrateSprite(sprite) {
+  if (Array.isArray(sprite.layers) && sprite.grids && typeof sprite.grids === "object") return sprite;
+  const grid = sprite.grid ?? blankGrid(sprite.width, sprite.height);
+  sprite.layers = [{ name: "base", visible: true }];
+  sprite.grids = { base: grid };
+  delete sprite.grid;
+  return sprite;
+}
+
+/** Composite visible layers bottom-to-top; the topmost non-transparent index wins. */
+export function flatten(sprite) {
+  const out = blankGrid(sprite.width, sprite.height);
+  for (const layer of sprite.layers) {
+    if (!layer.visible) continue;
+    const grid = sprite.grids[layer.name];
+    if (!grid) continue;
+    for (let y = 0; y < sprite.height; y++) {
+      for (let x = 0; x < sprite.width; x++) {
+        const v = grid[y][x];
+        if (v !== 0) out[y][x] = v;
+      }
+    }
   }
-  return anim.frames[frame.index];
+  return out;
+}
+
+export function getLayer(sprite, name) {
+  const layer = sprite.layers.find((l) => l.name === name);
+  if (!layer) {
+    throw new Error(`no layer "${name}" on sprite "${sprite.name}" (layers: ${sprite.layers.map((l) => l.name).join(", ")})`);
+  }
+  return layer;
+}
+
+/** Topmost layer — the default draw target ("draw on top"). */
+export function topLayer(sprite) {
+  return sprite.layers[sprite.layers.length - 1];
+}
+
+/** Stored grid of the bottom layer (the legacy single-grid equivalent). */
+export function baseGrid(sprite) {
+  return sprite.grids[sprite.layers[0].name];
+}
+
+/** Stored grid of a named layer. */
+export function layerGrid(sprite, name) {
+  return sprite.grids[getLayer(sprite, name).name];
+}
+
+/**
+ * Resolve which grid an operation targets: an animation frame (always flat) or
+ * one layer of the base sprite (default: topmost).
+ */
+export function targetGrid(sprite, frame, layerName) {
+  if (frame) {
+    const anim = sprite.animations[frame.anim];
+    if (!anim) throw new Error(`no animation "${frame.anim}" on sprite "${sprite.name}"`);
+    if (frame.index < 0 || frame.index >= anim.frames.length) {
+      throw new Error(`frame index ${frame.index} out of range (animation "${frame.anim}" has ${anim.frames.length} frames)`);
+    }
+    return anim.frames[frame.index];
+  }
+  const layer = layerName === undefined ? topLayer(sprite) : getLayer(sprite, layerName);
+  return sprite.grids[layer.name];
+}
+
+/** What a viewer should show: a flat frame, one layer, or the flattened composite. */
+export function displayGrid(sprite, frame, layerName) {
+  if (frame) return targetGrid(sprite, frame);
+  if (layerName !== undefined) return targetGrid(sprite, undefined, layerName);
+  return flatten(sprite);
+}
+
+function checkLayerName(name) {
+  if (typeof name !== "string" || !/^[a-zA-Z0-9_-]+$/.test(name)) {
+    throw new Error(`invalid layer name "${name}": letters, digits, - and _ only`);
+  }
+}
+
+export function addLayer(sprite, name) {
+  checkLayerName(name);
+  if (sprite.grids[name]) throw new Error(`layer "${name}" already exists on "${sprite.name}"`);
+  sprite.layers.push({ name, visible: true });
+  sprite.grids[name] = blankGrid(sprite.width, sprite.height);
+}
+
+export function removeLayer(sprite, name) {
+  getLayer(sprite, name);
+  if (sprite.layers.length <= 1) throw new Error("cannot remove the last remaining layer");
+  sprite.layers = sprite.layers.filter((l) => l.name !== name);
+  delete sprite.grids[name];
+}
+
+export function reorderLayer(sprite, name, toIndex) {
+  const from = sprite.layers.indexOf(getLayer(sprite, name));
+  if (!Number.isInteger(toIndex) || toIndex < 0 || toIndex >= sprite.layers.length) {
+    throw new Error(`toIndex must be an integer 0..${sprite.layers.length - 1} (got ${toIndex})`);
+  }
+  const [layer] = sprite.layers.splice(from, 1);
+  sprite.layers.splice(toIndex, 0, layer);
+}
+
+export function setLayerVisibility(sprite, name, visible) {
+  getLayer(sprite, name).visible = Boolean(visible);
+}
+
+/** Apply a layer mutation from MCP/REST after callers validate on a dry-run clone. */
+export function applyLayerOp(sprite, { op, name, toIndex, visible }) {
+  switch (op) {
+    case "add":
+      return addLayer(sprite, name);
+    case "remove":
+      return removeLayer(sprite, name);
+    case "reorder":
+      return reorderLayer(sprite, name, toIndex);
+    case "visibility":
+      return setLayerVisibility(sprite, name, visible);
+    default:
+      throw new Error(`unknown layer op "${op}" (add|remove|reorder|visibility)`);
+  }
 }
 
 function checkColor(sprite, color) {
@@ -135,6 +256,78 @@ function checkColor(sprite, color) {
 function checkBounds(sprite, x, y) {
   if (x < 0 || x >= sprite.width || y < 0 || y >= sprite.height) {
     throw new Error(`pixel (${x},${y}) out of bounds for ${sprite.width}x${sprite.height} grid`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fractional-coordinate ("smooth placement") rasterization.
+//
+// Indexed grids have no alpha, so a fractional op cannot anti-alias. Instead it
+// samples a shape at an 8x8 subpixel grid per pixel and paints pixels with at
+// least 50% coverage. Integer-coordinate ops keep the legacy rasterizers
+// byte-for-byte; only a genuinely fractional parameter selects this path.
+// ---------------------------------------------------------------------------
+
+const COVERAGE_SUB = 8;
+
+function allIntegers(...values) {
+  return values.every((v) => Number.isInteger(v));
+}
+
+function distToSegment(px, py, x0, y0, x1, y1) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(px - x0, py - y0);
+  const t = Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / len2));
+  return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+}
+
+/** Inclusive, grid-clipped raster box for a fractional shape extent. */
+function coverageBox(sprite, minX, minY, maxX, maxY) {
+  return {
+    x0: Math.max(0, Math.floor(minX)),
+    y0: Math.max(0, Math.floor(minY)),
+    x1: Math.min(sprite.width - 1, Math.ceil(maxX)),
+    y1: Math.min(sprite.height - 1, Math.ceil(maxY)),
+  };
+}
+
+/** Paint pixels whose sampled coverage is >= 50% (>= 32 of 64 samples). */
+function paintCoverage(sprite, grid, box, inside, color) {
+  const threshold = (COVERAGE_SUB * COVERAGE_SUB) / 2;
+  for (let y = box.y0; y <= box.y1; y++) {
+    for (let x = box.x0; x <= box.x1; x++) {
+      let hits = 0;
+      // Sample around the pixel's integer center (the same convention the
+      // legacy ellipse uses), so a half-pixel-centered shape stays mirror-
+      // symmetric under mirrorHorizontal's cell remap.
+      for (let sy = 0; sy < COVERAGE_SUB; sy++) {
+        const py = y - 0.5 + (sy + 0.5) / COVERAGE_SUB;
+        for (let sx = 0; sx < COVERAGE_SUB; sx++) {
+          if (inside(x - 0.5 + (sx + 0.5) / COVERAGE_SUB, py)) hits++;
+        }
+      }
+      if (hits >= threshold) grid[y][x] = color;
+    }
+  }
+}
+
+/**
+ * Fractional endpoints are checked after rounding, so sub-pixel nudges at the
+ * grid edge fail loudly instead of silently clipping the stroke.
+ */
+function checkEndpointBounds(sprite, x, y, where, label) {
+  if (Number.isInteger(x) && Number.isInteger(y)) {
+    checkBounds(sprite, x, y);
+    return;
+  }
+  const rx = Math.round(x);
+  const ry = Math.round(y);
+  if (rx < 0 || rx >= sprite.width || ry < 0 || ry >= sprite.height) {
+    throw new Error(
+      `${where}: endpoint ${label} (${x},${y}) rounds to (${rx},${ry}), out of bounds for ${sprite.width}x${sprite.height} grid`
+    );
   }
 }
 
@@ -180,9 +373,11 @@ function pointInPolygon(x, y, pts) {
  *   { type: "pixels", pixels: [{x, y, color}, ...] }  — max MAX_PIXELS_PER_OP
  *   { type: "clear", color?: 0 }
  *   { type: "outline", color?: 1, diagonals?, scope?: "all"|"new" }  — "new" only wraps pixels added in this call
- *   { type: "curve", x0, y0, cx, cy, x1, y1, color, thickness? }  — quadratic bezier arc
+ *   { type: "line", x0, y0, x1, y1, color, thickness? }  — integer coords: Bresenham square brush; fractional coords: coverage capsule
+ *   { type: "curve", x0, y0, cx, cy, x1, y1, color, thickness? }  — quadratic bezier arc; fractional params select coverage sampling
  *   { type: "polygon", points: [[x, y], ...], color }  — filled simple polygon (3..16 on-grid vertices)
  *   { type: "taperedLine", x0, y0, x1, y1, w0, w1, color }  — round-capped capsule with width changing along its length
+ *   { type: "ellipse", cx, cy, rx, ry, color, filled? }  — fractional params select coverage sampling
  *   { type: "litEllipse", cx, cy, rx, ry, ramp: [light, mid, dark], light?: [x, y], hi?, lo?, dither? }
  *   { type: "rampRect", x, y, w, h, ramp: [...], dir?: "v"|"h" }
  */
@@ -265,8 +460,25 @@ export function applyOps(sprite, grid, ops) {
         break;
       }
       case "line": {
-        // Bresenham line; thickness paints a centered square brush (clipped at edges).
+        // All-integer endpoints keep Bresenham with a centered square brush
+        // (byte-identical to the original). A fractional endpoint selects
+        // 8x8 coverage sampling with a round capsule brush, so placement is
+        // decided by the coordinates, not by hand-rounded pixels.
         checkColor(sprite, op.color);
+        if (!allIntegers(op.x0, op.y0, op.x1, op.y1)) {
+          checkEndpointBounds(sprite, op.x0, op.y0, where, "start");
+          checkEndpointBounds(sprite, op.x1, op.y1, where, "end");
+          const radius = (op.thickness ?? 1) / 2;
+          const box = coverageBox(
+            sprite,
+            Math.min(op.x0, op.x1) - radius,
+            Math.min(op.y0, op.y1) - radius,
+            Math.max(op.x0, op.x1) + radius,
+            Math.max(op.y0, op.y1) + radius
+          );
+          paintCoverage(sprite, grid, box, (x, y) => distToSegment(x, y, op.x0, op.y0, op.x1, op.y1) <= radius, op.color);
+          break;
+        }
         checkBounds(sprite, op.x0, op.y0);
         checkBounds(sprite, op.x1, op.y1);
         const th = op.thickness ?? 1;
@@ -294,12 +506,49 @@ export function applyOps(sprite, grid, ops) {
       }
       case "curve": {
         // Quadratic bezier from (x0,y0) to (x1,y1) bent toward control point
-        // (cx,cy). Sampled densely and painted with the same centered square
-        // brush as "line" — one op replaces hand-chained line segments for
-        // arcs (bows, capes, tails). The control point is not bounds-checked:
-        // a control off-grid is a legitimate way to get a shallow arc;
-        // painting is clipped. Endpoints must be on-grid (same as "line").
+        // (cx,cy). Integer params sample densely and paint with the centered
+        // square brush (unchanged). A fractional param flattens the bezier to a
+        // polyline and coverage-rasterizes a round capsule around it. The
+        // control point is never bounds-checked: a control off-grid is a
+        // legitimate way to get a shallow arc; painting is clipped. Endpoints
+        // must be on-grid (rounded for fractional input).
         checkColor(sprite, op.color);
+        if (!allIntegers(op.x0, op.y0, op.cx, op.cy, op.x1, op.y1)) {
+          checkEndpointBounds(sprite, op.x0, op.y0, where, "start");
+          checkEndpointBounds(sprite, op.x1, op.y1, where, "end");
+          const { x0, y0, cx, cy, x1, y1 } = op;
+          const radius = (op.thickness ?? 1) / 2;
+          const approxLen = Math.hypot(cx - x0, cy - y0) + Math.hypot(x1 - cx, y1 - cy);
+          const steps = Math.max(16, Math.ceil(approxLen * 2));
+          const pts = [];
+          for (let s = 0; s <= steps; s++) {
+            const t = s / steps;
+            const u = 1 - t;
+            pts.push([u * u * x0 + 2 * u * t * cx + t * t * x1, u * u * y0 + 2 * u * t * cy + t * t * y1]);
+          }
+          const xs = pts.map((p) => p[0]);
+          const ys = pts.map((p) => p[1]);
+          const box = coverageBox(
+            sprite,
+            Math.min(...xs) - radius,
+            Math.min(...ys) - radius,
+            Math.max(...xs) + radius,
+            Math.max(...ys) + radius
+          );
+          paintCoverage(
+            sprite,
+            grid,
+            box,
+            (x, y) => {
+              for (let i = 1; i < pts.length; i++) {
+                if (distToSegment(x, y, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) <= radius) return true;
+              }
+              return false;
+            },
+            op.color
+          );
+          break;
+        }
         checkBounds(sprite, op.x0, op.y0);
         checkBounds(sprite, op.x1, op.y1);
         const th = op.thickness ?? 1;
@@ -323,9 +572,32 @@ export function applyOps(sprite, grid, ops) {
         break;
       }
       case "ellipse": {
-        // Filled ellipse (default) or 1px ring (filled: false), centered at (cx, cy).
+        // Filled ellipse (default) or 1px ring (filled: false), centered at
+        // (cx, cy). Integer params keep the legacy +0.5 radius fudge. A
+        // fractional param uses the exact implicit ellipse and coverage
+        // sampling (no fudge); a ring is outer minus the (rx-1, ry-1) interior,
+        // so it stays 1px thick and never leaks fill.
         checkColor(sprite, op.color);
         const { cx, cy, rx, ry } = op;
+        if (!allIntegers(cx, cy, rx, ry)) {
+          const outer = (x, y) => {
+            const nx = (x - cx) / rx;
+            const ny = (y - cy) / ry;
+            return nx * nx + ny * ny <= 1;
+          };
+          const inner =
+            rx > 1 && ry > 1
+              ? (x, y) => {
+                  const nx = (x - cx) / (rx - 1);
+                  const ny = (y - cy) / (ry - 1);
+                  return nx * nx + ny * ny <= 1;
+                }
+              : () => false;
+          const inside = op.filled === false ? (x, y) => outer(x, y) && !inner(x, y) : outer;
+          const box = coverageBox(sprite, cx - rx, cy - ry, cx + rx, cy + ry);
+          paintCoverage(sprite, grid, box, inside, op.color);
+          break;
+        }
         const inside = (x, y) => {
           const nx = (x - cx) / (rx + 0.5);
           const ny = (y - cy) / (ry + 0.5);
@@ -562,8 +834,11 @@ function decodeRowSafe(rle, width, where) {
  * Until commit() runs, the sprite's grid data is unchanged; a failing op
  * therefore leaves no hidden partial state anywhere.
  */
-export function stageDraw(sprite, frame, ops, mirror = false) {
-  const target = targetGrid(sprite, frame); // validate before cloning
+export function stageDraw(sprite, frame, ops, mirror = false, layerName) {
+  // Resolve the target before cloning so an invalid layer/frame fails early.
+  // Animation frames are flat in Option A: a layer name is ignored for frames.
+  const layer = frame ? null : layerName === undefined ? topLayer(sprite) : getLayer(sprite, layerName);
+  const target = frame ? targetGrid(sprite, frame) : sprite.grids[layer.name];
   const stagedGrid = target.map((row) => [...row]);
   applyOps(sprite, stagedGrid, ops);
   if (mirror) mirrorHorizontal(sprite, stagedGrid);
@@ -572,10 +847,10 @@ export function stageDraw(sprite, frame, ops, mirror = false) {
       const anim = sprite.animations[frame.anim];
       anim.frames[frame.index] = stagedGrid;
     } else {
-      sprite.grid = stagedGrid;
+      sprite.grids[layer.name] = stagedGrid;
     }
   };
-  return { grid: stagedGrid, commit };
+  return { grid: stagedGrid, commit, layer: layer?.name ?? null };
 }
 
 /** Mirror the left half of the grid onto the right half. */
@@ -616,7 +891,7 @@ export function addAnimation(sprite, name, frameCount, fps) {
   }
   const frames = [];
   for (let i = 0; i < frameCount; i++) {
-    frames.push(i === 0 ? sprite.grid.map((r) => [...r]) : blankGrid(sprite.width, sprite.height));
+    frames.push(i === 0 ? flatten(sprite) : blankGrid(sprite.width, sprite.height));
   }
   sprite.animations[name] = { fps, frames };
 }
@@ -699,7 +974,7 @@ export function resizeSprite(sprite, width, height) {
     return out;
   };
 
-  sprite.grid = remap(sprite.grid);
+  sprite.grids = Object.fromEntries(Object.entries(sprite.grids).map(([name, grid]) => [name, remap(grid)]));
   for (const anim of Object.values(sprite.animations)) {
     anim.frames = anim.frames.map(remap);
   }

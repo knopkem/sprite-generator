@@ -162,7 +162,7 @@ export function generateSprite({ name, code, gridSize = 48, scale = 4, colors = 
   for (let y = 0; y < gridSize; y++) {
     for (let x = 0; x < gridSize; x++) {
       const a = assign[y * gridSize + x];
-      sprite.grid[y][x] = a < 0 ? 0 : remap[a];
+      sprite.grids.base[y][x] = a < 0 ? 0 : remap[a];
     }
   }
   return { sprite, logs, big: png, small };

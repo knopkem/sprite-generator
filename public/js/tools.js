@@ -1,7 +1,7 @@
 // Editor tools. Mouse lifecycle: down(x,y) -> move(x,y)* -> up(x,y).
 // Pencil/eraser collect a stroke and upload it as one batched op on mouse-up.
 
-import { state, api, currentGrid, emit } from "./state.js";
+import { state, api, currentGrid, activeGrid, emit } from "./state.js";
 
 let stroke = null; // Map<"x,y",{x,y,color}> while dragging pencil/eraser
 let anchor = null; // [x,y] drag start for line/rect
@@ -18,9 +18,11 @@ function inBounds(x, y) {
 
 function addStrokePixel(x, y) {
   if (!inBounds(x, y)) return;
+  const grid = activeGrid();
+  if (!grid) return;
   const color = state.tool === "eraser" ? 0 : state.color;
   stroke.set(`${x},${y}`, { x, y, color });
-  currentGrid()[y][x] = color; // optimistic local paint
+  grid[y][x] = color; // optimistic local paint on the active layer
   emit("canvas");
 }
 
@@ -77,7 +79,8 @@ export const tools = {
   fill: {
     async down(x, y) {
       if (!inBounds(x, y)) return;
-      if (currentGrid()[y][x] === state.color) return;
+      const grid = activeGrid();
+      if (!grid || grid[y][x] === state.color) return;
       await api.draw([{ type: "fill", x, y, color: state.color }]);
     },
     move() {},
@@ -119,9 +122,9 @@ export const tools = {
     },
   },
   replace: {
-    // Swap every pixel of the clicked color to the selected color (this frame).
+    // Swap every pixel of the clicked color to the selected color (active layer/frame).
     async down(x, y) {
-      const grid = currentGrid();
+      const grid = activeGrid();
       if (!grid || !inBounds(x, y)) return;
       const from = grid[y][x];
       if (from === state.color) return;

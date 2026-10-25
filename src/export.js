@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import { PNG } from "pngjs";
 import { parseColor } from "./render.js";
+import { flatten } from "./model.js";
 
 /**
  * Collect export frames: base sprite ("base" tag) + each animation's frames.
@@ -10,7 +11,8 @@ import { parseColor } from "./render.js";
  */
 function collectFrames(sprite, onlyAnim) {
   const out = [];
-  if (!onlyAnim) out.push({ name: sprite.name, anim: "base", index: 0, fps: 0, grid: sprite.grid });
+  // Layers exist on the base sprite only; export/sheet format stays flat.
+  if (!onlyAnim) out.push({ name: sprite.name, anim: "base", index: 0, fps: 0, grid: flatten(sprite) });
   for (const [animName, anim] of Object.entries(sprite.animations)) {
     if (onlyAnim && animName !== onlyAnim) continue;
     anim.frames.forEach((grid, index) => {

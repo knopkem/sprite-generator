@@ -62,12 +62,18 @@ palette, clamps pixels, and can store `outlineIndex` + `rampFamilies`;
 `litEllipse` triples) · `draw` (shape ops: `ellipse`, `line`,
 `curve` (quadratic bezier arc — one op for bows/capes/tails), `polygon`
 (3–16 vertex filled silhouette), `taperedLine` (round-capped width-changing
-limb/prop), `rect`, `block`; shading ops: `litEllipse` (lambert-shaded ellipse
+limb/prop), `rect`, `block`; `line`/`curve`/`ellipse` accept fractional
+coordinates → 8×8 coverage placement, while integer params keep the legacy
+crisp rasterizer; shading ops: `litEllipse` (lambert-shaded ellipse
 onto a [light, mid, dark] ramp, dithered), `rampRect` (gradient rect, v/h);
 bulk `rows` RLE; `pixels`/`clear`/`fill`; deterministic `outline` (defaults to
 the sprite `outlineIndex`; `scope: "new"` re-outlines only pixels added in that
-call — thin details stay thin) and `shift`; optional mirror; returns the render
-inline unless `render: false`; failed multi-op draws are atomic) ·
+call — thin details stay thin) and `shift`; optional mirror; `layer` targets one
+z-ordered layer (default topmost, ops are layer-local); `commit: false`
+previews the ops without saving (no version/history/viewer change); returns the
+render inline unless `render: false`; failed multi-op draws are atomic) ·
+`add_layer` / `remove_layer` / `reorder_layer` / `set_layer_visibility`
+(z-ordered base-sprite layers; animations flatten the composite) ·
 `undo` / `redo` (server-side snapshots, shared with the viewer) ·
 `get_render` (PNG image result — the agent's eyes; `scale: 1` is the
 actual-size test) · `export_render` (file fallback for hosts without image
@@ -78,6 +84,12 @@ revision, supported ops, grid sizes) · `list_sprites` / `get_state` ·
 ## Data & export
 
 - Sprites live as JSON in `sprites/` (palette-indexed grids, RLE-friendly).
+- **Layers (base sprite):** stored as `layers: [{name, visible}]` (index 0 =
+  bottom) plus `grids[layerName]`. Render/export flatten the *visible* layers
+  bottom-to-top, where the topmost non-transparent index wins. `draw` targets
+  the topmost layer unless you pass `layer`; `outline`, `fill`, and `mirror`
+  are layer-local. Animation frames stay flat — `add_animation` flattens the
+  composite into frame 0. Legacy files with a single `grid` migrate on load.
 - Grid sizes: 16/24/32/48/64. **32 is the sweet spot** — LLM spatial
   coherence degrades above that.
 - `export` writes `exports/<name>.png` (sheet) + Aseprite-style
@@ -95,6 +107,10 @@ revision, supported ops, grid sizes) · `list_sprites` / `get_state` ·
   you can undo the agent's last change and it can build on yours.
 - **Film strip**: frame thumbnails, click to select, drag to reorder,
   duplicate/delete, editable fps, play-in-place.
+- **Layer panel**: z-ordered layer list (top first), click to activate, eye to
+  show/hide, arrows to reorder, add/remove. Strokes target the active layer;
+  the canvas always shows the flattened composite. Animation view edits flat
+  frames and disables layer reordering.
 - **Delete sprite**: the 🗑 button beside each sprite in the sidebar
   confirms, then removes the sprite and all its animations.
 - **Onion skin** toggle: previous frame ghosted under the current one.

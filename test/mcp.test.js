@@ -8,7 +8,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Storage } from "../src/storage.js";
 import { createMcpServer, DRAW_OP_TYPES, getCapabilities } from "../src/tools.js";
 import { SERVER_VERSION, DRAW_SCHEMA_REVISION } from "../src/version.js";
-import { GRID_SIZES } from "../src/model.js";
+import { GRID_SIZES, addAnimation, baseGrid } from "../src/model.js";
 import { prepareReference } from "../src/reference.js";
 import { PNG } from "pngjs";
 
@@ -96,6 +96,8 @@ test("MCP get_capabilities agrees with tools/list, version, revision, and grid s
     assert.equal(caps.features.transactionalDraw, true);
     assert.equal(caps.features.inlineDrawRender, true);
     assert.equal(caps.features.generateSprite, true);
+    assert.equal(caps.features.previewDraw, true);
+    assert.equal(caps.features.layers, true);
 
     const { tools } = await h.client.listTools();
     const draw = tools.find((t) => t.name === "draw");
@@ -238,7 +240,210 @@ test("legacy sprites without outlineIndex/rampFamilies still read as defaults", 
       },
     });
     assert.notEqual(draw.isError, true);
-    assert.equal(h.storage.get("legacy").grid[3][4], 1);
+    assert.equal(baseGrid(h.storage.get("legacy"))[3][4], 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("MCP draw commit:false previews without touching state, history, or SSE", async () => {
+  const h = await harness();
+  try {
+    const sprite = h.storage.create("preview", 16, 16);
+    const snapshot = JSON.stringify(sprite);
+    const version = sprite.version;
+    let events = 0;
+    h.storage.onChange(() => events++);
+
+    const ops = [
+      { type: "rect", x: 2, y: 2, w: 4, h: 4, color: 5 },
+      { type: "pixels", pixels: [{ x: 8, y: 8, color: 9 }] },
+    ];
+    const preview = await h.client.callTool({ name: "draw", arguments: { sprite: "preview", ops, commit: false } });
+    assert.notEqual(preview.isError, true);
+    const previewText = preview.content.find((c) => c.type === "text").text;
+    assert.match(previewText, /PREVIEW ONLY — not saved/);
+    assert.match(previewText, /Re-run the same ops without commit: false/);
+    const previewImage = preview.content.find((c) => c.type === "image");
+    assert.ok(previewImage, "preview must return a render");
+
+    // Nothing observable changed.
+    assert.equal(JSON.stringify(h.storage.get("preview")), snapshot);
+    assert.equal(h.storage.get("preview").version, version);
+    assert.equal(events, 0);
+    assert.equal(h.storage.history.get("preview"), undefined);
+    assert.throws(() => h.storage.undo("preview"), /nothing to undo/);
+
+    // Committing the same ops produces the previewed grid and render.
+    const committed = await h.client.callTool({ name: "draw", arguments: { sprite: "preview", ops } });
+    assert.notEqual(committed.isError, true);
+    const committedImage = committed.content.find((c) => c.type === "image");
+    assert.equal(committedImage.data, previewImage.data);
+    assert.equal(baseGrid(h.storage.get("preview"))[2][2], 5);
+    assert.equal(baseGrid(h.storage.get("preview"))[8][8], 9);
+    assert.equal(events, 1);
+    assert.equal(h.storage.history.get("preview").undo.length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("MCP draw commit:false targets an animation frame without mutating it", async () => {
+  const h = await harness();
+  try {
+    const sprite = h.storage.create("preview-anim", 16, 16);
+    addAnimation(sprite, "idle", 2, 5);
+    h.storage.save(sprite);
+    const baseBefore = JSON.stringify(baseGrid(sprite));
+    const frameBefore = JSON.stringify(sprite.animations.idle.frames[1]);
+    const version = sprite.version;
+    let events = 0;
+    h.storage.onChange(() => events++);
+
+    const result = await h.client.callTool({
+      name: "draw",
+      arguments: {
+        sprite: "preview-anim",
+        frame: { anim: "idle", index: 1 },
+        ops: [{ type: "rect", x: 1, y: 1, w: 2, h: 2, color: 7 }],
+        commit: false,
+      },
+    });
+    assert.notEqual(result.isError, true);
+    assert.match(result.content.find((c) => c.type === "text").text, /frame 1 of "idle"/);
+
+    assert.equal(JSON.stringify(baseGrid(sprite)), baseBefore);
+    assert.equal(JSON.stringify(sprite.animations.idle.frames[1]), frameBefore);
+    assert.equal(sprite.version, version);
+    assert.equal(events, 0);
+    assert.equal(h.storage.history.get("preview-anim"), undefined);
+  } finally {
+    await h.close();
+  }
+});
+
+test("MCP draw accepts fractional shape coords but rejects fractional thickness", async () => {
+  const h = await harness();
+  try {
+    h.storage.create("frac", 16, 16);
+    const ok = await h.client.callTool({
+      name: "draw",
+      arguments: {
+        sprite: "frac",
+        render: false,
+        ops: [
+          { type: "line", x0: 2.5, y0: 2.5, x1: 12.5, y1: 2.5, color: 5 },
+          { type: "ellipse", cx: 7.5, cy: 7.5, rx: 3.5, ry: 2.5, color: 6 },
+          { type: "curve", x0: 1.5, y0: 14, cx: 7.5, cy: 10.5, x1: 14.5, y1: 14, color: 7 },
+        ],
+      },
+    });
+    assert.notEqual(ok.isError, true, ok.content?.[0]?.text);
+    assert.equal(baseGrid(h.storage.get("frac"))[2][7], 5);
+    assert.equal(baseGrid(h.storage.get("frac"))[7][7], 6);
+
+    const bad = await h.client.callTool({
+      name: "draw",
+      arguments: {
+        sprite: "frac",
+        render: false,
+        ops: [{ type: "line", x0: 1, y0: 1, x1: 10, y1: 10, color: 1, thickness: 1.5 }],
+      },
+    });
+    assert.equal(bad.isError, true);
+    assert.match(bad.content.find((c) => c.type === "text").text, /thickness|Expected int|Invalid input/i);
+  } finally {
+    await h.close();
+  }
+});
+
+test("MCP layer tools manage z-order and draw targets layers", async () => {
+  const h = await harness();
+  try {
+    h.storage.create("layered", 16, 16);
+
+    const add = await h.client.callTool({ name: "add_layer", arguments: { sprite: "layered", name: "costume" } });
+    assert.notEqual(add.isError, true, add.content?.[0]?.text);
+
+    const state = await h.client.callTool({ name: "get_state", arguments: { sprite: "layered" } });
+    assert.deepEqual(JSON.parse(state.content[0].text).layers, [
+      { name: "base", visible: true },
+      { name: "costume", visible: true },
+    ]);
+
+    // Default draw target = topmost layer.
+    const top = await h.client.callTool({
+      name: "draw",
+      arguments: { sprite: "layered", render: false, ops: [{ type: "rect", x: 2, y: 2, w: 2, h: 2, color: 6 }] },
+    });
+    assert.notEqual(top.isError, true);
+    assert.match(top.content[0].text, /layer "costume"/);
+    assert.equal(h.storage.get("layered").grids.costume[2][2], 6);
+    assert.equal(h.storage.get("layered").grids.base[2][2], 0);
+
+    // Explicit layer target.
+    const baseDraw = await h.client.callTool({
+      name: "draw",
+      arguments: { sprite: "layered", layer: "base", render: false, ops: [{ type: "rect", x: 5, y: 5, w: 2, h: 2, color: 5 }] },
+    });
+    assert.notEqual(baseDraw.isError, true);
+    assert.match(baseDraw.content[0].text, /layer "base"/);
+    assert.equal(h.storage.get("layered").grids.base[5][5], 5);
+    assert.equal(h.storage.get("layered").grids.costume[5][5], 0);
+
+    // get_grid can read one layer or the composite.
+    const composite = await h.client.callTool({ name: "get_grid", arguments: { sprite: "layered" } });
+    assert.match(composite.content[0].text, /16:0/); // RLE text, composite readable
+    const oneLayer = await h.client.callTool({ name: "get_grid", arguments: { sprite: "layered", layer: "costume" } });
+    assert.equal(oneLayer.content[0].text.includes("6"), true);
+
+    // Visibility and reorder.
+    const hide = await h.client.callTool({ name: "set_layer_visibility", arguments: { sprite: "layered", name: "costume", visible: false } });
+    assert.notEqual(hide.isError, true);
+    assert.equal(h.storage.get("layered").layers.find((l) => l.name === "costume").visible, false);
+
+    const reorder = await h.client.callTool({ name: "reorder_layer", arguments: { sprite: "layered", name: "costume", toIndex: 0 } });
+    assert.notEqual(reorder.isError, true);
+    assert.deepEqual(h.storage.get("layered").layers.map((l) => l.name), ["costume", "base"]);
+
+    const remove = await h.client.callTool({ name: "remove_layer", arguments: { sprite: "layered", name: "costume" } });
+    assert.notEqual(remove.isError, true);
+    assert.deepEqual(h.storage.get("layered").layers.map((l) => l.name), ["base"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("MCP invalid layer ops are atomic and agent-readable", async () => {
+  const h = await harness();
+  try {
+    const sprite = h.storage.create("layers-bad", 16, 16);
+    const snapshot = JSON.stringify(sprite);
+    const version = sprite.version;
+    let events = 0;
+    h.storage.onChange(() => events++);
+
+    const attempts = [
+      { name: "remove_layer", arguments: { sprite: "layers-bad", name: "base" } },
+      { name: "remove_layer", arguments: { sprite: "layers-bad", name: "nope" } },
+      { name: "add_layer", arguments: { sprite: "layers-bad", name: "base" } },
+      { name: "add_layer", arguments: { sprite: "layers-bad", name: "bad name!" } },
+      { name: "reorder_layer", arguments: { sprite: "layers-bad", name: "base", toIndex: 4 } },
+      {
+        name: "draw",
+        arguments: { sprite: "layers-bad", layer: "nope", render: false, ops: [{ type: "rect", x: 0, y: 0, w: 1, h: 1, color: 1 }] },
+      },
+    ];
+    for (const attempt of attempts) {
+      const result = await h.client.callTool(attempt);
+      assert.equal(result.isError, true, `expected rejection for ${attempt.name}`);
+      assert.match(result.content.find((c) => c.type === "text").text, /Error:/);
+    }
+
+    assert.equal(JSON.stringify(h.storage.get("layers-bad")), snapshot);
+    assert.equal(h.storage.get("layers-bad").version, version);
+    assert.equal(events, 0);
+    assert.equal(h.storage.history.get("layers-bad"), undefined);
   } finally {
     await h.close();
   }
@@ -281,8 +486,8 @@ test("MCP draw with a valid then invalid op is atomic and agent-readable", async
       arguments: { sprite: "mcp-draw", render: false, ops: [{ type: "pixels", pixels: [{ x: 4, y: 4, color: 7 }] }] },
     });
     assert.notEqual(ok.isError, true);
-    assert.equal(h.storage.get("mcp-draw").grid[4][4], 7);
-    assert.equal(h.storage.get("mcp-draw").grid[1][1], 0);
+    assert.equal(baseGrid(h.storage.get("mcp-draw"))[4][4], 7);
+    assert.equal(baseGrid(h.storage.get("mcp-draw"))[1][1], 0);
   } finally {
     await h.close();
   }

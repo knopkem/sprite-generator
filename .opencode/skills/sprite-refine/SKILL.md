@@ -11,6 +11,10 @@ Targeted editing without destroying what already works.
 
 1. **See it first.** `get_render` (with `grid: true` if you need coordinates)
    and/or `get_grid` to know the exact current state before touching anything.
+   If the sprite has multiple layers, `get_state` lists them (bottom→top) and
+   `get_grid` defaults to the flattened composite — pass `layer` to read one
+   layer. Draws hit the topmost layer unless you pass `layer`, so patches land
+   where you expect.
 
 2. **Smallest possible patch.** Translate the request into the minimal set of
    ops:
@@ -18,6 +22,8 @@ Targeted editing without destroying what already works.
    - A region wrong → `rect` + `pixels`, or one partial `rows` op with `y`
      offset covering only the affected rows
    - Never redraw the whole grid unless the user says "start over" / "redraw".
+   - Trying a placement? Pass `commit: false` to preview; nothing is saved and
+     no undo entry is created. Re-run without it to apply.
 
 3. **Render and compare.** `get_render` after the patch. Check: did the fix
    land? Did anything adjacent break? Iterate until the user approves.

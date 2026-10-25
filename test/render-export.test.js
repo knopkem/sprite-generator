@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PNG } from "pngjs";
-import { createSprite, applyOps, addAnimation, copyFrame } from "../src/model.js";
+import { createSprite, applyOps, addAnimation, copyFrame, baseGrid } from "../src/model.js";
 import { renderPng, renderOnionSkin, parseColor } from "../src/render.js";
 import { exportSprite } from "../src/export.js";
 import { Storage } from "../src/storage.js";
@@ -22,8 +22,8 @@ test("parseColor handles rgb/rgba/transparent", () => {
 
 test("renderPng produces a valid PNG of expected size", () => {
   const s = createSprite("t", 16, 16);
-  applyOps(s, s.grid, [{ type: "rect", x: 4, y: 4, w: 4, h: 4, color: 9 }]);
-  const buf = renderPng(s.grid, s.palette);
+  applyOps(s, baseGrid(s), [{ type: "rect", x: 4, y: 4, w: 4, h: 4, color: 9 }]);
+  const buf = renderPng(baseGrid(s), s.palette);
   const png = PNG.sync.read(buf);
   assert.equal(png.width, 512);
   assert.equal(png.height, 512);
@@ -35,13 +35,13 @@ test("renderPng produces a valid PNG of expected size", () => {
 
 test("renderPng respects explicit scale", () => {
   const s = createSprite("t", 16, 16);
-  const png = PNG.sync.read(renderPng(s.grid, s.palette, { scale: 4 }));
+  const png = PNG.sync.read(renderPng(baseGrid(s), s.palette, { scale: 4 }));
   assert.equal(png.width, 64);
 });
 
 test("onion skin renders and tints neighbors", () => {
   const s = createSprite("t", 16, 16);
-  applyOps(s, s.grid, [{ type: "pixels", pixels: [{ x: 2, y: 2, color: 1 }] }]);
+  applyOps(s, baseGrid(s), [{ type: "pixels", pixels: [{ x: 2, y: 2, color: 1 }] }]);
   addAnimation(s, "run", 3, 8);
   copyFrame(s, "run", 0, 1);
   applyOps(s, s.animations.run.frames[1], [{ type: "pixels", pixels: [{ x: 5, y: 5, color: 2 }] }]);
@@ -53,7 +53,7 @@ test("onion skin renders and tints neighbors", () => {
 test("exportSprite writes sheet PNG + aseprite JSON", () => {
   const storage = tmpStorage();
   const s = storage.create("wiz", 16, 16);
-  applyOps(s, s.grid, [{ type: "rect", x: 0, y: 0, w: 4, h: 4, color: 5 }]);
+  applyOps(s, baseGrid(s), [{ type: "rect", x: 0, y: 0, w: 4, h: 4, color: 5 }]);
   addAnimation(s, "run", 3, 10);
   storage.save(s);
 

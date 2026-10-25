@@ -18,5 +18,8 @@ export const SERVER_VERSION = pkg.version;
  *   1: rows/rect/pixels/clear/outline/fill/line/curve/ellipse/litEllipse/
  *      rampRect/block/shift
  *   2: + polygon, taperedLine
+ *   3: line/ellipse/curve accept fractional coords (coverage rasterizer);
+ *      draw gains a commit:false preview flag
+ *   4: layers — draw targets a layer (default topmost), layer tools/routes
  */
-export const DRAW_SCHEMA_REVISION = 2;
+export const DRAW_SCHEMA_REVISION = 4;

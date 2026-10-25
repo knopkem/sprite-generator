@@ -38,13 +38,21 @@
   .frame-cell span { font-size: 10px; color: #a6adc8; padding: 2px 0; }
   .frame-ops { display: flex; gap: 6px; align-items: center; color: #a6adc8; font-size: 12px; }
   #status { color: #a6adc8; font-size: 12px; min-height: 16px; }
+  #layers { margin-top: 14px; }
+  .layers-head { display: flex; align-items: center; justify-content: space-between; color: #a6adc8; font-size: 12px; margin-bottom: 4px; }
+  .layer-item { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 5px; cursor: pointer; }
+  .layer-item:hover { background: #313244; }
+  .layer-item.active { background: #313244; outline: 1px solid #89b4fa; }
+  .layer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  .layer-btn { padding: 1px 5px; font-size: 10px; line-height: 1.5; border-radius: 4px; }
+  .layer-remove { width: 100%; margin-top: 6px; font-size: 11px; }
   #status .err { color: #f38ba8; }
   #export-result { font-size: 12px; color: #a6e3a1; white-space: pre-wrap; max-width: 640px; }
   kbd { background: #313244; border-radius: 3px; padding: 0 4px; font-size: 11px; }
 </style>
 </head>
 <body>
-<div id="sidebar"><h1>Sprite Studio</h1><div id="sprites"></div></div>
+<div id="sidebar"><h1>Sprite Studio</h1><div id="sprites"></div><div id="layers"></div></div>
 <div id="main">
   <div class="row" id="toolbar">
     <button data-tool="pencil" title="pencil (B)">✏️</button>

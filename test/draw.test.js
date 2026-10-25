@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createSprite, stageDraw, addAnimation } from "../src/model.js";
+import { createSprite, stageDraw, addAnimation, baseGrid } from "../src/model.js";
 import { Storage } from "../src/storage.js";
 import { drawAndSave } from "../src/draw.js";
 
@@ -52,7 +52,7 @@ test("failed animation-frame draw leaves the frame and base grid untouched", () 
   storage.create("d", 16, 16);
   withAnimation(storage, "d");
   const sprite = storage.get("d");
-  const baseBefore = JSON.stringify(sprite.grid);
+  const baseBefore = JSON.stringify(baseGrid(sprite));
   const frameBefore = JSON.stringify(sprite.animations.idle.frames[1]);
   const version = sprite.version;
   let events = 0;
@@ -63,7 +63,7 @@ test("failed animation-frame draw leaves the frame and base grid untouched", () 
     /out of bounds/
   );
 
-  assert.equal(JSON.stringify(sprite.grid), baseBefore);
+  assert.equal(JSON.stringify(baseGrid(sprite)), baseBefore);
   assert.equal(JSON.stringify(sprite.animations.idle.frames[1]), frameBefore);
   assert.equal(sprite.version, version);
   assert.equal(events, 0);
@@ -98,20 +98,20 @@ test("successful multi-op draw commits once: version, event, undo snapshot", () 
   assert.equal(events, 1);
   assert.equal(storage.history.get("d").undo.length, 1);
   assert.equal(storage.history.get("d").redo.length, 0);
-  assert.deepEqual(storage.get("d").grid, grid);
+  assert.deepEqual(baseGrid(storage.get("d")), grid);
 });
 
 test("undo after a successful draw restores the whole pre-draw state", () => {
   const storage = tmpStorage();
   const sprite = storage.create("d", 16, 16);
-  const before = JSON.stringify(sprite.grid);
+  const before = JSON.stringify(baseGrid(sprite));
   drawAndSave(storage, "d", { ops: validOps });
-  assert.notEqual(JSON.stringify(storage.get("d").grid), before);
+  assert.notEqual(JSON.stringify(baseGrid(storage.get("d"))), before);
 
   const restored = storage.undo("d");
-  assert.equal(JSON.stringify(restored.grid), before);
-  assert.equal(restored.grid[2][2], 0);
-  assert.equal(restored.grid[8][8], 0);
+  assert.equal(JSON.stringify(baseGrid(restored)), before);
+  assert.equal(baseGrid(restored)[2][2], 0);
+  assert.equal(baseGrid(restored)[8][8], 0);
 });
 
 test("mirror applies to the staged grid and commits to the intended target", () => {
@@ -119,8 +119,8 @@ test("mirror applies to the staged grid and commits to the intended target", () 
   storage.create("d", 16, 16);
   drawAndSave(storage, "d", { ops: [{ type: "pixels", pixels: [{ x: 2, y: 5, color: 3 }] }], mirror: true });
   const base = storage.get("d");
-  assert.equal(base.grid[5][2], 3);
-  assert.equal(base.grid[5][13], 3);
+  assert.equal(baseGrid(base)[5][2], 3);
+  assert.equal(baseGrid(base)[5][13], 3);
 
   withAnimation(storage, "d");
   drawAndSave(storage, "d", {
@@ -130,23 +130,23 @@ test("mirror applies to the staged grid and commits to the intended target", () 
   });
   assert.equal(storage.get("d").animations.idle.frames[1][1][1], 7);
   assert.equal(storage.get("d").animations.idle.frames[1][1][14], 7);
-  assert.equal(storage.get("d").grid[1][1], 0); // base not touched
+  assert.equal(baseGrid(storage.get("d"))[1][1], 0); // base not touched
 });
 
 test("stageDraw without commit never mutates the source grid", () => {
   const sprite = createSprite("s", 16, 16);
-  sprite.grid[0][0] = 4;
-  const before = JSON.stringify(sprite.grid);
+  baseGrid(sprite)[0][0] = 4;
+  const before = JSON.stringify(baseGrid(sprite));
   const staged = stageDraw(sprite, undefined, [{ type: "rect", x: 2, y: 2, w: 2, h: 2, color: 7 }]);
 
-  assert.equal(JSON.stringify(sprite.grid), before);
-  assert.equal(sprite.grid[2][2], 0);
+  assert.equal(JSON.stringify(baseGrid(sprite)), before);
+  assert.equal(baseGrid(sprite)[2][2], 0);
   assert.equal(staged.grid[2][2], 7);
-  assert.notEqual(staged.grid, sprite.grid);
+  assert.notEqual(staged.grid, baseGrid(sprite));
 
   staged.commit();
-  assert.equal(sprite.grid[2][2], 7);
-  assert.equal(sprite.grid[0][0], 4);
+  assert.equal(baseGrid(sprite)[2][2], 7);
+  assert.equal(baseGrid(sprite)[0][0], 4);
 });
 
 test("stageDraw stages an animation frame without touching the original frame", () => {
@@ -160,5 +160,5 @@ test("stageDraw stages an animation frame without touching the original frame", 
   staged.commit();
   assert.equal(sprite.animations.run.frames[1][0][0], 2);
   assert.equal(sprite.animations.run.frames[1][3][3], 6);
-  assert.equal(sprite.grid[0][0], 0); // base unaffected
+  assert.equal(baseGrid(sprite)[0][0], 0); // base unaffected
 });

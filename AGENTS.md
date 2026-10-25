@@ -39,8 +39,11 @@ npm run serve -- --port=8080 --root=/path/to/project
 - MCP and REST draws must go through `drawAndSave()` (`src/draw.js`): `stageDraw()` validates and rasterizes on a clone **before** `beginEdit()`, so a failed multi-op draw leaves grid, file, version, undo/redo, and SSE untouched. Never call `applyOps()` directly from a tool route.
 - A draw op needs both a zod variant in `src/tools.js` and a `switch` case in `model.applyOps`; validation and execution are separate, and the REST route reuses `drawOpsSchema`. Add ops to both plus `SERVER_INSTRUCTIONS` and the README op list.
 - Palette index 0 is always transparent and locked. Grid dimensions must be one of `16/24/32/48/64`. Animations are created with 2–16 frames and capped at 16 (1-frame animations are allowed only by deleting down); fps 1–60. `pixels` ops cap at 512.
+- `line`, `ellipse`, and `curve` have dual rasterizers: all-integer params must reproduce legacy output exactly (Bresenham / legacy `inside()`); any fractional param selects 8×8 coverage sampling with a 50% threshold. Characterization tests pin the legacy path.
 - `rows` ops are full-width RLE and must sum to grid width; `block` rows have independent widths. Don't confuse them.
 - MCP is intentionally stateless: a fresh server/transport per POST request. `GET /mcp` returns 405 by design.
+- Layers are Option A: base-sprite only, frames flat. Stored state is `grids[layerName]` + `layers`; `sprite.grid` does not exist. Render/export must call `flatten()`; `targetGrid(sprite, frame, layer)` resolves a frame or the topmost/named layer. Legacy `grid` files migrate in `storage.get()`.
+- Layer mutations validate on a throwaway clone before `beginEdit()` (MCP/REST share `applyLayerOp`), so a rejected op adds no undo snapshot.
 - `opencode.jsonc` sets `codemode: false` so PNG image tool results reach the model directly. Don't enable Code Mode unless the harness handles images.
 
 ## Repo hygiene

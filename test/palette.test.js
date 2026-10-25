@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSprite, applyOps } from "../src/model.js";
+import { createSprite, applyOps, baseGrid } from "../src/model.js";
 import { suggestOutlineIndex, rampTripleSuggestions, organizePalette } from "../src/palette.js";
 import { generateSprite } from "../src/generate.js";
 import { parseColor } from "../src/render.js";
@@ -32,16 +32,16 @@ test("outline op defaults to sprite.outlineIndex; explicit color wins; legacy de
   const s = createSprite("t", 16, 16);
   assert.equal(s.outlineIndex, 1);
   s.outlineIndex = 7;
-  applyOps(s, s.grid, [{ type: "rect", x: 4, y: 4, w: 2, h: 2, color: 14 }, { type: "outline" }]);
-  assert.equal(s.grid[3][4], 7);
+  applyOps(s, baseGrid(s), [{ type: "rect", x: 4, y: 4, w: 2, h: 2, color: 14 }, { type: "outline" }]);
+  assert.equal(baseGrid(s)[3][4], 7);
 
-  applyOps(s, s.grid, [{ type: "outline", color: 9 }]);
-  assert.equal(s.grid[2][4], 9);
+  applyOps(s, baseGrid(s), [{ type: "outline", color: 9 }]);
+  assert.equal(baseGrid(s)[2][4], 9);
 
   const legacy = createSprite("legacy", 16, 16);
   delete legacy.outlineIndex;
-  applyOps(legacy, legacy.grid, [{ type: "rect", x: 4, y: 4, w: 2, h: 2, color: 14 }, { type: "outline" }]);
-  assert.equal(legacy.grid[3][4], 1);
+  applyOps(legacy, baseGrid(legacy), [{ type: "rect", x: 4, y: 4, w: 2, h: 2, color: 14 }, { type: "outline" }]);
+  assert.equal(baseGrid(legacy)[3][4], 1);
 
   // a palette with index 1 light must not become an accidental light outline
   const { sprite: generated } = generateSprite({
@@ -66,7 +66,7 @@ test("outline op defaults to sprite.outlineIndex; explicit color wins; legacy de
   assert.equal(idx, darkest);
   assert.ok(luminance(generated.palette[idx]) < luminance(generated.palette[1]));
   // grid remapping still points at the organized palette
-  for (const row of generated.grid) {
+  for (const row of baseGrid(generated)) {
     for (const v of row) assert.ok(v >= 0 && v < generated.palette.length);
   }
 });

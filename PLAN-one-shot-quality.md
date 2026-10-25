@@ -861,6 +861,10 @@ of this change set.
 
 ## Deferred ideas and non-goals
 
+Update 2026-10-24: the three `PLAN.md` roadmap items this plan deferred —
+fractional geometry, layers, and preview-only draw — are now implemented (server
+0.3.0 / draw schema rev 4). The rest of this list remains non-goals.
+
 These may be valuable later, but they are not required to complete this plan:
 
 - **Layers:** already specified in `PLAN.md` Part 2. This plan's staged draw and

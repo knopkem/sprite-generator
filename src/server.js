@@ -10,7 +10,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createMcpServer, drawOpsSchema, getCapabilities } from "./tools.js";
 import { SERVER_VERSION, DRAW_SCHEMA_REVISION } from "./version.js";
 import { Storage } from "./storage.js";
-import { targetGrid, insertFrame, deleteFrame, moveFrame, setFps, normalizeHex, resizeSprite } from "./model.js";
+import { displayGrid, insertFrame, deleteFrame, moveFrame, setFps, normalizeHex, resizeSprite, applyLayerOp } from "./model.js";
 import { drawAndSave } from "./draw.js";
 import { renderPng } from "./render.js";
 import { exportSprite } from "./export.js";
@@ -69,8 +69,10 @@ async function handleApi(req, res, url) {
     try {
       const s = storage.get(m[1]);
       const anim = url.searchParams.get("anim");
-      const frame = url.searchParams.get("frame");
-      const grid = anim != null && frame != null ? targetGrid(s, { anim, index: Number(frame) }) : s.grid;
+      const frameParam = url.searchParams.get("frame");
+      const frame = anim != null && frameParam != null ? { anim, index: Number(frameParam) } : undefined;
+      const layer = url.searchParams.get("layer") ?? undefined;
+      const grid = displayGrid(s, frame, layer);
       const buf = renderPng(grid, s.palette, {
         scale: Number(url.searchParams.get("scale")) || undefined,
         grid: url.searchParams.get("grid") === "1",
@@ -94,8 +96,26 @@ async function handleApi(req, res, url) {
         frame,
         ops: parsed.data,
         mirror: Boolean(body.mirror),
+        layer: body.layer ?? undefined,
       });
       return json(res, 200, { ok: true, version: s.version });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
+  m = /^\/api\/sprite\/([\w-]+)\/layers$/.exec(p);
+  if (m && req.method === "POST") {
+    // Validate on a dry-run clone before beginEdit() so a rejected layer op
+    // leaves pixels, history, version, and SSE untouched.
+    try {
+      const body = JSON.parse(await readBody(req));
+      const s = storage.get(m[1]);
+      applyLayerOp(structuredClone(s), body);
+      storage.beginEdit(m[1]);
+      applyLayerOp(s, body);
+      storage.save(s);
+      return json(res, 200, { ok: true, version: s.version, layers: s.layers });
     } catch (e) {
       return json(res, 400, { error: e.message });
     }

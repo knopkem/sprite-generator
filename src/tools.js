@@ -4,8 +4,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { encodeGrid } from "./rle.js";
-import { targetGrid, addAnimation, copyFrame, normalizeHex, resizeSprite, contentBounds, GRID_SIZES, DEFAULT_PALETTE, PALETTE_FAMILIES, DEFAULT_RAMP_FAMILIES } from "./model.js";
-import { drawAndSave } from "./draw.js";
+import { displayGrid, flatten, addAnimation, copyFrame, normalizeHex, resizeSprite, contentBounds, GRID_SIZES, DEFAULT_PALETTE, PALETTE_FAMILIES, DEFAULT_RAMP_FAMILIES, applyLayerOp } from "./model.js";
+import { drawAndSave, previewDraw } from "./draw.js";
 import { SERVER_VERSION, DRAW_SCHEMA_REVISION } from "./version.js";
 import { renderPng, renderOnionSkin } from "./render.js";
 import { exportSprite } from "./export.js";
@@ -28,6 +28,11 @@ Contract (read before drawing):
   blocks; block for small local RLE regions (rows have independent widths);
   rows (full-width RLE, must sum to grid width) only for whole-sprite fills.
   Never hundreds of single pixels.
+- Fractional placement: line, curve, and ellipse accept fractional coordinates
+  (e.g. x0: 26.5). Integer params keep the classic crisp rasterizer; ANY
+  fractional param switches to 8x8 coverage sampling (round brush, 50%
+  threshold) for precise sub-pixel placement. Indexed grids have no alpha, so
+  edges stay crisp. Prefer generate_sprite for organic anti-aliased art.
 - Workflow: set_palette (optional) -> draw silhouette -> pass the silhouette
   gate below -> detail passes -> actual-size review. undo/redo recover a bad
   pass without redrawing.
@@ -45,12 +50,22 @@ Contract (read before drawing):
   If an item fails, patch the silhouette. Do NOT use shading to conceal an
   anatomy or overlap problem.
 - Build back-to-front: rear props, body, costume, arms, then held props.
+- Layers: each sprite has z-ordered layers (index 0 = bottom). draw targets the
+  TOPMOST layer by default; pass layer: "<name>" to target another. Ops are
+  layer-local (outline/fill/mirror see only that layer). Animations flatten the
+  visible composite once and frames stay flat. Prefer add_layer for
+  body/costume/prop separation instead of repainting overlaps; get_render
+  shows the composite unless you pass layer.
 - Drawing loop: draw returns an inline render by default; critique THAT image
   instead of requesting the same render again. Use get_render when changing
   scale/grid/target or when inline rendering was skipped. Inspect an enlarged
   render (scale 2-4) for pixel placement. BEFORE completion inspect scale: 1
   for actual-size readability; an extra scale: 2 view is allowed but is NOT
   the actual-size test. Never claim success without looking.
+- Speculative passes: draw with commit: false to preview ops without saving.
+  Nothing changes (no version, undo, or viewer update); re-run the same ops
+  without commit: false to apply. Use it to test placement instead of undoing
+  a committed pass.
 - The default palette has ${DEFAULT_PALETTE.length - 1} opaque colors plus
   transparent index 0. It is ramp-based: each hue family has light/mid/dark as
   adjacent indices. Shade with the darker ramp neighbor, highlight with the
@@ -138,21 +153,21 @@ const drawOp = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("line"),
-    x0: z.number().int(),
-    y0: z.number().int(),
-    x1: z.number().int(),
-    y1: z.number().int(),
+    x0: z.number().finite().describe("start x — fractional values (e.g. 26.5) select smooth coverage placement"),
+    y0: z.number().finite(),
+    x1: z.number().finite().describe("end x"),
+    y1: z.number().finite(),
     color: z.number().int().min(0),
     thickness: z.number().int().min(1).max(4).optional(),
   }),
   z.object({
     type: z.literal("curve"),
-    x0: z.number().int().describe("start x"),
-    y0: z.number().int().describe("start y"),
-    cx: z.number().int().describe("bezier control x (may be off-grid for shallow arcs)"),
-    cy: z.number().int().describe("bezier control y"),
-    x1: z.number().int().describe("end x"),
-    y1: z.number().int().describe("end y"),
+    x0: z.number().finite().describe("start x — fractional values select smooth coverage placement"),
+    y0: z.number().finite().describe("start y"),
+    cx: z.number().finite().describe("bezier control x (may be off-grid for shallow arcs)"),
+    cy: z.number().finite().describe("bezier control y"),
+    x1: z.number().finite().describe("end x"),
+    y1: z.number().finite().describe("end y"),
     color: z.number().int().min(0),
     thickness: z.number().int().min(1).max(4).optional(),
   }),
@@ -177,10 +192,10 @@ const drawOp = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("ellipse"),
-    cx: z.number().int(),
-    cy: z.number().int(),
-    rx: z.number().int().min(1),
-    ry: z.number().int().min(1),
+    cx: z.number().finite().describe("center x — fractional values select smooth coverage placement"),
+    cy: z.number().finite(),
+    rx: z.number().finite().min(1),
+    ry: z.number().finite().min(1),
     color: z.number().int().min(0),
     filled: z.boolean().optional().describe("default true; false = 1px ring"),
   }),
@@ -242,6 +257,8 @@ export function getCapabilities() {
       transactionalDraw: true,
       inlineDrawRender: true,
       generateSprite: true,
+      previewDraw: true,
+      layers: true,
     },
   };
 }
@@ -308,7 +325,7 @@ function text(s) {
  * surfaced in the tool result, at the moment it matters.
  */
 function headroomNote(s) {
-  const b = contentBounds(s.grid);
+  const b = contentBounds(flatten(s));
   if (!b) return "";
   const room = {
     top: b.minY,
@@ -323,6 +340,23 @@ function headroomNote(s) {
 
 function err(e) {
   return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+}
+
+/**
+ * Shared layer mutation path: validate on a throwaway clone first so a rejected
+ * op leaves palette/pixels/history/version/SSE untouched, then snapshot once.
+ */
+function editLayerOp(storage, spriteName, body) {
+  const sprite = storage.get(spriteName);
+  applyLayerOp(structuredClone(sprite), body);
+  storage.beginEdit(spriteName);
+  applyLayerOp(sprite, body);
+  storage.save(sprite);
+  return sprite;
+}
+
+function layerSummary(s) {
+  return s.layers.map((l) => `${l.name}${l.visible ? "" : " (hidden)"}`).join(" → ");
 }
 
 function png(buf) {
@@ -368,7 +402,7 @@ export function createMcpServer(storage) {
     safe(({ name, width, height }) => {
       const s = storage.create(name, width, height);
       const warn = width > 32 || height > 32 ? " WARNING: grids above 32 degrade LLM spatial coherence — expect to need more fix passes." : "";
-      return text(`Created "${name}" (${width}x${height}), palette indices 0..${s.palette.length - 1} (0 = transparent, ${s.palette.length - 1} opaque colors).${warn} Draw the character at ~75-85% of grid height, bottom-centered, with 2-4px of air on every side — animations need that headroom. Next: draw the silhouette with shape ops (ellipse, line, curve, polygon, taperedLine, rect, block) — not a full-sprite "rows" scanline fill — then check the silhouette gate before adding detail. draw returns the render inline.`);
+      return text(`Created "${name}" (${width}x${height}), palette indices 0..${s.palette.length - 1} (0 = transparent, ${s.palette.length - 1} opaque colors).${warn} Draw the character at ~75-85% of grid height, bottom-centered, with 2-4px of air on every side — animations need that headroom. Starts with one layer "${s.layers[0].name}"; add_layer(name) creates z-ordered body/costume/prop layers and draw targets the topmost unless you pass layer. Next: draw the silhouette with shape ops (ellipse, line, curve, polygon, taperedLine, rect, block) — not a full-sprite "rows" scanline fill — then check the silhouette gate before adding detail. draw returns the render inline.`);
     })
   );
 
@@ -384,7 +418,7 @@ export function createMcpServer(storage) {
   server.registerTool(
     "get_state",
     {
-      description: "Get sprite metadata: size, palette, outlineIndex, animations (names, fps, frame counts), version.",
+      description: "Get sprite metadata: size, palette, outlineIndex, layers (bottom→top, with visibility), animations (names, fps, frame counts), version.",
       inputSchema: { sprite: z.string() },
     },
     safe(({ sprite }) => {
@@ -396,12 +430,69 @@ export function createMcpServer(storage) {
           height: s.height,
           palette: s.palette,
           outlineIndex: s.outlineIndex ?? 1,
+          layers: s.layers.map((l) => ({ name: l.name, visible: l.visible })),
           animations: Object.fromEntries(
             Object.entries(s.animations).map(([k, a]) => [k, { fps: a.fps, frames: a.frames.length }])
           ),
           version: s.version,
         })
       );
+    })
+  );
+
+  server.registerTool(
+    "add_layer",
+    {
+      description:
+        "Add a new empty layer on top of the sprite's z-order. Draw then targets it by default (or pass layer explicitly). Use layers for body/costume/prop separation so overlaps never require repainting. Animations flatten the composite; frames stay flat.",
+      inputSchema: {
+        sprite: z.string(),
+        name: z.string().describe("letters, digits, - and _"),
+      },
+    },
+    safe(({ sprite, name }) => {
+      const s = editLayerOp(storage, sprite, { op: "add", name });
+      return text(`Added layer "${name}". Layers bottom→top: ${layerSummary(s)}. New draws target "${name}" by default.`);
+    })
+  );
+
+  server.registerTool(
+    "remove_layer",
+    {
+      description: "Remove a layer and its pixels. Refuses to remove the last remaining layer.",
+      inputSchema: { sprite: z.string(), name: z.string() },
+    },
+    safe(({ sprite, name }) => {
+      const s = editLayerOp(storage, sprite, { op: "remove", name });
+      return text(`Removed layer "${name}". Layers bottom→top: ${layerSummary(s)}. Draws now target the topmost layer unless you pass layer.`);
+    })
+  );
+
+  server.registerTool(
+    "reorder_layer",
+    {
+      description: "Move a layer to a new z-index (0 = bottom). Affects which layer wins overlaps and which layer draw targets by default.",
+      inputSchema: {
+        sprite: z.string(),
+        name: z.string(),
+        toIndex: z.number().int().min(0).describe("0 = bottom; must be < layer count"),
+      },
+    },
+    safe(({ sprite, name, toIndex }) => {
+      const s = editLayerOp(storage, sprite, { op: "reorder", name, toIndex });
+      return text(`Moved layer "${name}" to index ${toIndex}. Layers bottom→top: ${layerSummary(s)}.`);
+    })
+  );
+
+  server.registerTool(
+    "set_layer_visibility",
+    {
+      description: "Show or hide a layer. Hidden layers are skipped when rendering/exporting but keep their pixels.",
+      inputSchema: { sprite: z.string(), name: z.string(), visible: z.boolean() },
+    },
+    safe(({ sprite, name, visible }) => {
+      const s = editLayerOp(storage, sprite, { op: "visibility", name, visible });
+      return text(`Layer "${name}" is now ${visible ? "visible" : "hidden"}. Layers bottom→top: ${layerSummary(s)}.`);
     })
   );
 
@@ -451,7 +542,7 @@ export function createMcpServer(storage) {
       else delete s.rampFamilies;
       // clamp existing grid indices into the new palette
       const max = s.palette.length - 1;
-      for (const grid of [s.grid, ...Object.values(s.animations).flatMap((a) => a.frames)]) {
+      for (const grid of [...Object.values(s.grids), ...Object.values(s.animations).flatMap((a) => a.frames)]) {
         for (const row of grid) for (let i = 0; i < row.length; i++) row[i] = Math.min(row[i], max);
       }
       storage.save(s);
@@ -491,6 +582,7 @@ export function createMcpServer(storage) {
         "Apply bulk draw ops to the base sprite or one animation frame. Ops run in order and the whole call is atomic: if any op fails, nothing is committed. " +
         "Think in shapes, not scanlines: ellipse for heads/round shapes; line for straight limbs/props; " +
         'curve for arcs (one quadratic bezier: a bow is ONE curve, not chained line segments); ' +
+        "line/curve/ellipse accept fractional coordinates (e.g. x0: 26.5) for smooth coverage-based placement; integer params keep the classic crisp rasterizer; " +
         "polygon for angular silhouettes (tunics, boots, quivers, shields); taperedLine for limbs/props that change width (thigh->calf, upper arm->forearm); " +
         "rect for blocks; block for a small local RLE region (rows have independent widths); " +
         'rows (full-width RLE, each row must sum to grid width) for whole-sprite fills. ' +
@@ -501,6 +593,8 @@ export function createMcpServer(storage) {
         '"fill" flood-fills a region from a point. ' +
         '"shift" translates the whole grid by dx/dy (animation bob/squash). ' +
         "mirror: true mirrors the left half onto the right AFTER ops run (for symmetric sprites). " +
+        'layer targets one z-ordered layer by name (default: topmost); ops are layer-local. Animation frames are flat (layer is ignored for frame targets). ' +
+        "commit: false is a PREVIEW: the ops are staged and rendered but nothing is saved (no version bump, no history entry, no SSE) — use it for speculative passes, then re-run the same ops without commit: false to apply. " +
         "Palette ramps: shading = pick the neighbor index within a ramp family (see get_palette). " +
         "The result includes an inline render by default (pass render: false to skip) — critique that image instead of asking for the same render again. " +
         "Use get_render when changing scale/grid/target; inspect scale: 1 before declaring the sprite done.",
@@ -508,20 +602,36 @@ export function createMcpServer(storage) {
         sprite: z.string(),
         ops: z.array(drawOp).min(1).max(50),
         frame: frameRef,
+        layer: z.string().optional().describe('target layer name (default: topmost). Ignored for animation frames.'),
         mirror: z.boolean().optional(),
+        commit: z
+          .boolean()
+          .optional()
+          .describe("default true. false = preview only: stage + render the ops without saving, versioning, or touching undo history"),
         render: z.boolean().optional().describe("include a PNG render of the result in this response (default true) — the vision loop without a separate get_render call"),
         scale: z.number().int().min(1).max(32).optional().describe("render px scale, default auto (~512px output)"),
         grid: z.boolean().optional().describe("overlay a coordinate grid on the render"),
       },
     },
-    safe(({ sprite, ops, frame, mirror, render, scale, grid: showGrid }) => {
-      const { sprite: s, grid } = drawAndSave(storage, sprite, { frame, ops, mirror });
-      const target = frame ? `frame ${frame.index} of "${frame.anim}"` : "base sprite";
-      const msg = `Applied ${ops.length} op(s) to ${target}${mirror ? " (mirrored)" : ""}.${frame ? "" : headroomNote(s)}`;
-      if (render === false) return text(`${msg} Render skipped — call get_render to see the result.`);
+    safe(({ sprite, ops, frame, layer, mirror, commit = true, render, scale, grid: showGrid }) => {
+      const result = commit
+        ? drawAndSave(storage, sprite, { frame, ops, mirror, layer })
+        : previewDraw(storage, sprite, { frame, ops, mirror, layer });
+      const { sprite: s, grid } = result;
+      const target = frame ? `frame ${frame.index} of "${frame.anim}"` : `layer "${result.layer}"`;
+      const applied = `Applied ${ops.length} op(s) to ${target}${mirror ? " (mirrored)" : ""}.`;
+      const msg = commit
+        ? `${applied}${frame ? "" : headroomNote(s)}`
+        : `PREVIEW ONLY — not saved. ${applied} Nothing was committed (no version bump, no undo entry, no viewer update). Re-run the same ops without commit: false to apply.`;
+      if (render === false) {
+        return text(commit ? `${msg} Render skipped — call get_render to see the result.` : `${msg} Preview render skipped — pass render: true (omit render) to see the result.`);
+      }
       return {
         content: [
-          { type: "text", text: `${msg} Render below — critique it honestly before the next pass.` },
+          {
+            type: "text",
+            text: commit ? `${msg} Render below — critique it honestly before the next pass.` : `${msg} Preview render below.`,
+          },
           png(renderPng(grid, s.palette, { scale, grid: showGrid })).content[0],
         ],
       };
@@ -561,17 +671,19 @@ export function createMcpServer(storage) {
         "Render the sprite (or one animation frame) to an upscaled PNG and LOOK at it. " +
         "draw already returns an inline render, so use get_render when changing scale/grid/target or when inline rendering was skipped. " +
         "Inspect an enlarged render (scale 2-4) for pixel placement, and scale: 1 for the actual-size readability test before declaring the sprite done. " +
+        "Renders the flattened composite by default; pass layer to inspect one layer. " +
         "grid: true overlays a coordinate grid (useful when locating pixels to fix).",
       inputSchema: {
         sprite: z.string(),
         frame: frameRef,
+        layer: z.string().optional().describe("render one layer instead of the flattened composite (ignored for animation frames)"),
         scale: z.number().int().min(1).max(32).optional().describe("px scale, default auto (~512px output)"),
         grid: z.boolean().optional(),
       },
     },
-    safe(({ sprite, frame, scale, grid }) => {
+    safe(({ sprite, frame, layer, scale, grid }) => {
       const s = storage.get(sprite);
-      const g = targetGrid(s, frame);
+      const g = displayGrid(s, frame, layer);
       return png(renderPng(g, s.palette, { scale, grid }));
     })
   );
@@ -581,12 +693,19 @@ export function createMcpServer(storage) {
     {
       description:
         "Fallback for hosts that cannot display image tool results: write the render PNG to exports/ and return the file path, which you can then read as an image file.",
-      inputSchema: { sprite: z.string(), frame: frameRef, grid: z.boolean().optional() },
+      inputSchema: {
+        sprite: z.string(),
+        frame: frameRef,
+        layer: z.string().optional().describe("render one layer instead of the flattened composite"),
+        grid: z.boolean().optional(),
+      },
     },
-    safe(({ sprite, frame, grid }) => {
+    safe(({ sprite, frame, layer, grid }) => {
       const s = storage.get(sprite);
-      const g = targetGrid(s, frame);
-      const name = frame ? `${sprite}-${frame.anim}-${frame.index}-preview.png` : `${sprite}-preview.png`;
+      const g = displayGrid(s, frame, layer);
+      const name = frame
+        ? `${sprite}-${frame.anim}-${frame.index}-preview.png`
+        : `${sprite}${layer ? `-${layer}` : ""}-preview.png`;
       const p = storage.exportPath(name);
       fs.writeFileSync(p, renderPng(g, s.palette, { grid }));
       return text(`Render written to: ${p}`);
@@ -596,12 +715,16 @@ export function createMcpServer(storage) {
   server.registerTool(
     "get_grid",
     {
-      description: "Get the exact grid as RLE (same format draw accepts). Use to re-read precise state before planning a patch.",
-      inputSchema: { sprite: z.string(), frame: frameRef },
+      description: "Get the exact grid as RLE (same format draw accepts). Base sprite: flattened composite by default, or one layer via layer. Use to re-read precise state before planning a patch.",
+      inputSchema: {
+        sprite: z.string(),
+        frame: frameRef,
+        layer: z.string().optional().describe("read one layer instead of the flattened composite"),
+      },
     },
-    safe(({ sprite, frame }) => {
+    safe(({ sprite, frame, layer }) => {
       const s = storage.get(sprite);
-      return text(encodeGrid(targetGrid(s, frame)));
+      return text(encodeGrid(displayGrid(s, frame, layer)));
     })
   );
 
@@ -809,7 +932,7 @@ export function createMcpServer(storage) {
       return {
         content: [
           { type: "text", text: msg },
-          png(renderPng(sprite.grid, sprite.palette)).content[0],
+          png(renderPng(flatten(sprite), sprite.palette)).content[0],
         ],
       };
     })

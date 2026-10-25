@@ -17,10 +17,12 @@ description: Export a sprite with its animations to a PNG sprite sheet and JSON 
      strip (common for engines that want one file per animation).
 
 3. **Call `export`** and report the returned paths:
-   - `exports/<name>.png` — the sheet (transparent background)
+   - `exports/<name>.png` — the sheet (transparent background), with the base
+     frame rendered as the **flattened composite** of visible layers (engines
+     never see layer metadata)
    - `exports/<name>.json` — Aseprite-style metadata: per-frame rect +
-     duration, `meta.frameTags` with one tag per animation (usable as
-     animation names in Godot, Unity via Aseprite importers, Phaser, etc.)
+      duration, `meta.frameTags` with one tag per animation (usable as
+      animation names in Godot, Unity via Aseprite importers, Phaser, etc.)
 
 4. **Tell the user the frame layout** (rows × cols, frame size) so they can
    configure their engine's import.

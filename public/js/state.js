@@ -4,6 +4,7 @@ export const state = {
   sprites: [],
   current: null, // sprite object
   anim: "", // selected animation ("" = base sprite)
+  layer: null, // active layer name (null = topmost); client-only UI state
   frame: 0,
   color: 1,
   tool: "pencil",
@@ -21,11 +22,46 @@ export function emit(evt, data) {
   for (const fn of listeners[evt] ?? []) fn(data);
 }
 
+/** Flatten visible layers bottom-to-top (topmost non-transparent index wins). */
+export function flattenSprite(s) {
+  const out = Array.from({ length: s.height }, () => new Array(s.width).fill(0));
+  for (const layer of s.layers ?? []) {
+    if (!layer.visible) continue;
+    const grid = s.grids?.[layer.name];
+    if (!grid) continue;
+    for (let y = 0; y < s.height; y++) {
+      for (let x = 0; x < s.width; x++) {
+        const v = grid[y][x];
+        if (v !== 0) out[y][x] = v;
+      }
+    }
+  }
+  return out;
+}
+
+/** Active layer name, falling back to the topmost layer when the selection is stale. */
+export function activeLayerName() {
+  const s = state.current;
+  if (!s?.layers?.length) return null;
+  if (state.layer && s.layers.some((l) => l.name === state.layer)) return state.layer;
+  return s.layers[s.layers.length - 1].name;
+}
+
+/** Grid the canvas shows: a flat animation frame or the flattened composite. */
 export function currentGrid() {
   const s = state.current;
   if (!s) return null;
-  if (!state.anim) return s.grid;
-  return s.animations[state.anim]?.frames[state.frame] ?? s.grid;
+  if (state.anim) return s.animations[state.anim]?.frames[state.frame] ?? flattenSprite(s);
+  return flattenSprite(s);
+}
+
+/** Grid the editor tools write to: the active layer (or a flat animation frame). */
+export function activeGrid() {
+  const s = state.current;
+  if (!s) return null;
+  if (state.anim) return s.animations[state.anim]?.frames[state.frame] ?? null;
+  const name = activeLayerName();
+  return name ? s.grids[name] : null;
 }
 
 export function currentAnim() {
@@ -87,9 +123,12 @@ export const api = {
     return guard(
       post(`/api/sprite/${s.name}/draw`, {
         ops,
-        ...(state.anim ? { anim: state.anim, frame: state.frame } : {}),
+        ...(state.anim ? { anim: state.anim, frame: state.frame } : { layer: activeLayerName() }),
       })
     );
+  },
+  layerOp(body) {
+    return guard(post(`/api/sprite/${state.current.name}/layers`, body));
   },
   undo: () => guard(post(`/api/sprite/${state.current.name}/undo`)),
   redo: () => guard(post(`/api/sprite/${state.current.name}/redo`)),

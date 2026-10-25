@@ -34,6 +34,14 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
    **Do not hand-draw outlines** — finish the pass with an `outline` op, which
    wraps the shape using the sprite's `outlineIndex`.
    Work back-to-front: rear props → body → costume → arms → held props.
+   **Use layers for overlaps**: `add_layer("costume")` / `add_layer("prop")`
+   then draw; `draw` targets the topmost layer by default and ops are
+   layer-local, so a tabard pass cannot overwrite the arm. Pass
+   `layer: "<name>"` to switch. Animation frames stay flat (frame 0 is the
+   flattened composite).
+   For sub-pixel placement use fractional coordinates on `line`, `curve`, and
+   `ellipse` (e.g. `x0: 26.5`); integer params keep the classic crisp
+   rasterizer. Prefer fractional placement over hand-rounded guesses.
    At 16-32px, iconic beats anatomical: simplify the pose until it reads,
    never chase realism the grid can't hold.
 
@@ -97,5 +105,8 @@ Workflow for creating a sprite from scratch with the sprite-studio MCP tools.
   independent row widths.
 - Prefer deterministic ops over hand-drawn polish: `outline` for silhouettes,
   `shift` to move a frame, `mirror: true` for symmetry.
+- Speculative pose? `draw` with `commit: false` previews it without saving
+  (no version bump, no undo entry, no viewer update). Re-run the same ops
+  without `commit: false` to apply.
 - If a draw op or tool seems missing, call `get_capabilities`; restart the
   daemon and reconnect the MCP session after server code changes.

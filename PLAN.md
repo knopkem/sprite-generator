@@ -1,6 +1,6 @@
 # Plan: Deferred work from the 64px archer session
 
-Status: **planned, not started** · Written 2026-10-24
+Status: **implemented 2026-10-24** (server 0.3.0, draw schema rev 4)
 Three independent work items, deferred after the archer test exposed toolkit
 weaknesses. Each part below is a self-contained brief: motivation, design
 decisions, file-by-file changes, tests, risks, acceptance criteria.
@@ -496,3 +496,39 @@ without touching state, history, or the viewer.
 
 - No REST/viewer preview, no SSE preview events, no `generate_sprite`
   preview, no multi-op "transaction" staging area.
+
+---
+
+# Implementation notes (2026-10-24)
+
+All three parts landed together at server **0.3.0 / draw schema rev 4**;
+`npm test` is green (107 tests).
+
+- **Part 3 (preview):** MCP `draw` accepts `commit: false`; `previewDraw()` in
+  `src/draw.js` reuses `stageDraw()` so the preview and the committed run
+  produce the identical grid/render. Capabilities advertise `previewDraw`.
+  Tests cover base/frame previews, no version/history/SSE mutation, and
+  preview-vs-commit render equality.
+- **Part 1 (fractional geometry):** `line`, `curve`, and `ellipse` schemas
+  accept finite floats. Any fractional param selects the 8×8 coverage
+  rasterizer (`paintCoverage`); all-integer params keep the legacy
+  Bresenham/sample/`inside(+0.5)` paths byte-for-byte (pinned by reference-copy
+  characterization tests in `test/fractional.test.js`). Coverage samples around
+  the pixel's integer center (the same convention as legacy ops and
+  `litEllipse`), so half-pixel-centered shapes stay symmetric under
+  `mirrorHorizontal`. Fractional endpoints are bounds-checked after rounding.
+- **Part 2 (layers, Option A):** stored state is `layers` + `grids[layer]`;
+  `sprite.grid` is gone and legacy files migrate in `Storage.get()`.
+  `flatten()` is used by render/export/animation frame 0. `draw`, `get_render`,
+  `export_render`, and `get_grid` accept `layer` (default topmost/composite).
+  New MCP tools `add_layer` / `remove_layer` / `reorder_layer` /
+  `set_layer_visibility` and `POST /api/sprite/:name/layers` validate on a
+  throwaway clone before `beginEdit()`. The viewer has a layer panel (activate,
+  eye, reorder, add/remove) and uploads strokes to the active layer while the
+  canvas shows the composite.
+- **Dogfood:** a 16px smoke sprite was drawn in a throwaway project root with a
+  fractional-thickness-2 bow `curve` on a `prop` layer and a fractional
+  `line` string; composite and per-layer renders were inspected at 24×. No
+  generated art was committed and the temporary root was deleted. The
+  project's gitignored `sprites/` directory was not modified by the smoke run.
+

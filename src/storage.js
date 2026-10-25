@@ -4,7 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { createSprite } from "./model.js";
+import { createSprite, migrateSprite } from "./model.js";
 
 export class Storage {
   constructor(root) {
@@ -56,6 +56,7 @@ export class Storage {
     const file = this.spritePath(name);
     if (!fs.existsSync(file)) throw new Error(`no sprite "${name}" — create it with create_sprite`);
     const sprite = JSON.parse(fs.readFileSync(file, "utf8"));
+    migrateSprite(sprite);
     this.cache.set(name, sprite);
     return sprite;
   }

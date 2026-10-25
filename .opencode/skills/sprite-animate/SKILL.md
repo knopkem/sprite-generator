@@ -15,7 +15,9 @@ every frame must remain recognizably the same character.
    counts, fps, pose breakdowns).
 
 2. **Create the animation**: `add_animation`. Frame 0 is auto-copied from the
-   base sprite.
+   base sprite — specifically its **flattened composite** of visible layers.
+   Frames are flat: layer targeting does not apply to them, and later layer
+   edits do not leak into existing frames.
 
 3. **Keyframe-first**: `copy_frame` frame 0 → all other frames. Then patch
    ONE frame at a time with `draw` + `frame: {anim, index}`. Start with the

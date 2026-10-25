@@ -1,6 +1,6 @@
 // App wiring: sidebar, toolbar, palette editor, playback, shortcuts, SSE.
 
-import { state, api, currentAnim, on, emit } from "./state.js";
+import { state, api, currentAnim, on, emit, activeLayerName } from "./state.js";
 import { initCanvas, drawCanvas, scale } from "./canvas.js";
 import { cancelDrag } from "./tools.js";
 import { renderFilmstrip } from "./filmstrip.js";
@@ -38,6 +38,7 @@ function renderSidebar() {
       if (wasCurrent) {
         state.current = null;
         state.anim = "";
+        state.layer = null;
         state.frame = 0;
       }
       await api.load();
@@ -105,6 +106,98 @@ function renderPalette() {
 }
 
 let cursorPos = null;
+
+function layerButton(text, title, disabled) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "layer-btn";
+  b.textContent = text;
+  b.title = title;
+  b.disabled = Boolean(disabled);
+  return b;
+}
+
+function renderLayers() {
+  const box = $("layers");
+  if (!box) return;
+  box.innerHTML = "";
+  const s = state.current;
+  if (!s?.layers) return;
+
+  const head = document.createElement("div");
+  head.className = "layers-head";
+  const title = document.createElement("span");
+  title.textContent = state.anim ? "layers (base sprite)" : "layers";
+  head.appendChild(title);
+  const add = layerButton("+ layer", "add an empty layer on top", state.anim);
+  add.onclick = async () => {
+    const name = prompt("layer name (letters, digits, - and _)");
+    if (!name) return;
+    const result = await api.layerOp({ op: "add", name });
+    if (result) {
+      state.layer = name;
+      emit("render");
+    }
+  };
+  head.appendChild(add);
+  box.appendChild(head);
+
+  const active = activeLayerName();
+  // Topmost layer first in the panel; z-order index is bottom-up.
+  for (const layer of [...s.layers].reverse()) {
+    const idx = s.layers.indexOf(layer);
+    const row = document.createElement("div");
+    row.className = "layer-item" + (layer.name === active ? " active" : "");
+    row.title = `${layer.name} — z-index ${idx}${layer.visible ? "" : " (hidden)"}`;
+
+    const eye = layerButton(layer.visible ? "👁" : "🚫", layer.visible ? "hide layer" : "show layer", state.anim);
+    eye.onclick = async (ev) => {
+      ev.stopPropagation();
+      await api.layerOp({ op: "visibility", name: layer.name, visible: !layer.visible });
+    };
+    row.appendChild(eye);
+
+    const label = document.createElement("span");
+    label.className = "layer-name";
+    label.textContent = layer.name;
+    row.appendChild(label);
+
+    if (!state.anim) {
+      const down = layerButton("↓", "move down one z-index", idx === 0);
+      down.onclick = async (ev) => {
+        ev.stopPropagation();
+        await api.layerOp({ op: "reorder", name: layer.name, toIndex: idx - 1 });
+      };
+      const up = layerButton("↑", "move up one z-index", idx === s.layers.length - 1);
+      up.onclick = async (ev) => {
+        ev.stopPropagation();
+        await api.layerOp({ op: "reorder", name: layer.name, toIndex: idx + 1 });
+      };
+      row.append(down, up);
+    }
+
+    row.onclick = () => {
+      state.layer = layer.name;
+      emit("render");
+    };
+    box.appendChild(row);
+  }
+
+  const activeLayer = s.layers.find((l) => l.name === active);
+  const remove = layerButton("remove layer", "remove the active layer and its pixels", state.anim || s.layers.length <= 1);
+  remove.className = "layer-remove";
+  remove.onclick = async () => {
+    if (!activeLayer) return;
+    if (!confirm(`Remove layer "${activeLayer.name}" and its pixels?`)) return;
+    const result = await api.layerOp({ op: "remove", name: activeLayer.name });
+    if (result) {
+      state.layer = null;
+      emit("render");
+    }
+  };
+  box.appendChild(remove);
+}
+
 function renderStatus() {
   const s = state.current;
   const parts = [];
@@ -114,6 +207,7 @@ function renderStatus() {
   }
   parts.push(`scale ${scale()}×`);
   if (state.tool !== "pencil") parts.push(`tool: ${state.tool}`);
+  if (s && !state.anim && s.layers?.length > 1) parts.push(`layer ${activeLayerName()}`);
   $("status").textContent = parts.join(" · ") || "no sprites — ask your agent to draw one";
 }
 
@@ -137,6 +231,7 @@ on("render", () => {
   renderAnimSelect();
   renderResizeSelect();
   renderPalette();
+  renderLayers();
   renderFilmstrip($("filmstrip"));
   renderStatus();
 });

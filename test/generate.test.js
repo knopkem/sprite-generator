@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { runPainter, generateSprite, organizePalette } from "../src/generate.js";
 import { parseColor } from "../src/render.js";
+import { baseGrid } from "../src/model.js";
 
 test("generateSprite paints big, downsamples, quantizes into an indexed sprite", () => {
   const { sprite } = generateSprite({
@@ -16,8 +17,8 @@ test("generateSprite paints big, downsamples, quantizes into an indexed sprite",
     `,
   });
   assert.equal(sprite.width, 16);
-  assert.notEqual(sprite.grid[8][8], 0); // center of the disc is opaque
-  assert.equal(sprite.grid[0][0], 0); // corner stays transparent
+  assert.notEqual(baseGrid(sprite)[8][8], 0); // center of the disc is opaque
+  assert.equal(baseGrid(sprite)[0][0], 0); // corner stays transparent
   assert.ok(sprite.palette.some((c) => c === "#ff0000")); // palette-indexed now
 });
 
@@ -87,10 +88,10 @@ test("generated palettes are organized into light->dark ramp families", () => {
   assert.ok(lum(fams[0].from) > lum(fams[0].from + 1));
   assert.ok(lum(fams[0].from + 1) > lum(fams[0].from + 2));
   // grid indices point into the organized palette correctly
-  assert.equal(sprite.grid[8][2], fams[0].from); // leftmost band = lightest red
-  assert.equal(sprite.grid[8][6], fams[0].from + 1);
-  assert.equal(sprite.grid[8][10], fams[0].from + 2);
-  assert.equal(sprite.grid[8][13], fams[1].from); // blue band
+  assert.equal(baseGrid(sprite)[8][2], fams[0].from); // leftmost band = lightest red
+  assert.equal(baseGrid(sprite)[8][6], fams[0].from + 1);
+  assert.equal(baseGrid(sprite)[8][10], fams[0].from + 2);
+  assert.equal(baseGrid(sprite)[8][13], fams[1].from); // blue band
 });
 
 test("generated palettes stay valid with a dominant flat color plus accents", () => {
@@ -114,7 +115,7 @@ test("generated palettes stay valid with a dominant flat color plus accents", ()
     assert.match(c, /^#[0-9a-f]{6}$/);
     assert.ok(parseColor(c), `palette entry ${c} should be an opaque color`);
   }
-  for (const row of sprite.grid) {
+  for (const row of baseGrid(sprite)) {
     for (const idx of row) {
       assert.ok(idx >= 0 && idx < sprite.palette.length);
       if (idx !== 0) assert.ok(parseColor(sprite.palette[idx]), `index ${idx} maps to an invalid color`);
